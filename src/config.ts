@@ -29,3 +29,15 @@ export function getConnection(config: ResolvedConfig): SQL {
 	if (typeof config.database === "string") return new SQL(config.database);
 	return new SQL(config.database);
 }
+
+export function getMaintenanceConnection(config: ResolvedConfig): SQL {
+	if (!config.database) {
+		return new SQL({ database: "postgres" });
+	}
+	if (typeof config.database === "string") {
+		const url = new URL(config.database);
+		url.pathname = "/postgres";
+		return new SQL(url.toString());
+	}
+	return new SQL({ ...config.database, database: "postgres" });
+}

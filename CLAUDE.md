@@ -5,8 +5,9 @@ Database migration tool for Bun. PostgreSQL only via `Bun.sql`.
 ## Commands
 
 - `bun run check` — runs biome, knip, and tsc
+- `bun test` — runs unit and integration tests (requires local `baked_orm_test` database)
 - `bun run format` — auto-fix biome issues
-- `bun db <command>` — CLI entry point (requires `"db": "baked"` script alias)
+- `bun db <command>` — CLI entry point (requires `"db": "bake"` script alias)
 
 ## Code style
 
@@ -22,6 +23,7 @@ Database migration tool for Bun. PostgreSQL only via `Bun.sql`.
 - **Knip** for unused exports/deps detection. Run with `knip-bun` (not `knip`) due to ESM compat
 - **Husky** pre-commit hook runs all three checks
 - **TypeScript** strict mode, `noUncheckedIndexedAccess` enabled
+- **Bun test** for unit and integration tests. Tests live in `tests/`
 
 ## Conventions
 
@@ -39,4 +41,5 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/config.ts` — loads `baked.config.ts`, provides `getConnection()` for DB access
 - `src/runner.ts` — migration discovery, advisory locking, transactional up/down execution
 - `src/introspect.ts` — queries `information_schema` + `pg_type` to generate typed `db/schema.ts`
-- `src/commands/` — one file per CLI command (init, generate, migrate, status)
+- `src/commands/` — one file per CLI command (init, create, drop, generate, migrate, status)
+- `tests/` — unit tests for pure functions, CLI integration tests via subprocess spawning

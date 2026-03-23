@@ -15,7 +15,7 @@ Add a script alias to your `package.json`:
 ```json
 {
   "scripts": {
-    "db": "baked"
+    "db": "bake"
   }
 }
 ```
@@ -39,6 +39,15 @@ bun db init
 ```
 
 Generates a `baked.config.ts` with default settings, pre-populated with database connection details from your environment variables. This is optional — baked-orm works with zero configuration.
+
+### Create or drop a database
+
+```bash
+bun db create myapp           # Create the database
+bun db drop myapp             # Drop the database
+```
+
+Connects to the `postgres` maintenance database to run `CREATE DATABASE` or `DROP DATABASE`. Uses connection details from your config or `PG*` env vars.
 
 ### Generate a migration
 
@@ -149,6 +158,23 @@ export default defineConfig({
 
 If `database` is omitted, Bun's default SQL driver is used (reads `PG*` env vars from `.env`).
 
+## Development
+
+```bash
+bun install
+
+# Integration tests require a local PostgreSQL database
+bun db create baked_orm_test
+
+bun test           # run tests
+bun run check      # biome + knip + tsc
+bun run format     # auto-fix lint issues
+```
+
 ## Editor setup
 
 For SQL syntax highlighting inside template literals, install the [SQL tagged template literals](https://marketplace.visualstudio.com/items?itemName=frigus02.vscode-sql-tagged-template-literals-syntax-only) VS Code extension. It highlights SQL in tagged templates like `` txn`SELECT * FROM users` ``.
+
+## License
+
+MIT

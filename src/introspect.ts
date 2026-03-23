@@ -113,7 +113,10 @@ async function introspectCompositeTypes(
 	return [...typeMap.values()];
 }
 
-function mapPgType(pgType: string, compositeNames?: Set<string>): string {
+export function mapPgType(
+	pgType: string,
+	compositeNames?: Set<string>,
+): string {
 	if (pgType.endsWith("[]")) {
 		const baseType = pgType.slice(0, -2);
 		return `${mapPgType(baseType, compositeNames)}[]`;
@@ -139,7 +142,7 @@ function mapPgType(pgType: string, compositeNames?: Set<string>): string {
 	return "unknown";
 }
 
-function toPascalCase(input: string): string {
+export function toPascalCase(input: string): string {
 	return input
 		.split("_")
 		.map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
@@ -168,7 +171,7 @@ async function introspectColumns(
 			   is_nullable, column_default, character_maximum_length
 		FROM information_schema.columns
 		WHERE table_schema = 'public'
-			AND table_name = ANY(${connection.array(tables)})
+			AND table_name = ANY(${connection.array(tables, "text")})
 		ORDER BY table_name, ordinal_position
 	`;
 }
@@ -187,7 +190,7 @@ async function introspectConstraints(
 			AND tc.table_schema = kcu.table_schema
 		WHERE tc.constraint_type = 'PRIMARY KEY'
 			AND tc.table_schema = 'public'
-			AND tc.table_name = ANY(${connection.array(tables)})
+			AND tc.table_name = ANY(${connection.array(tables, "text")})
 		ORDER BY tc.table_name, kcu.ordinal_position
 	`;
 
@@ -207,7 +210,7 @@ async function introspectConstraints(
 			AND tc.table_schema = ccu.table_schema
 		WHERE tc.constraint_type = 'FOREIGN KEY'
 			AND tc.table_schema = 'public'
-			AND tc.table_name = ANY(${connection.array(tables)})
+			AND tc.table_name = ANY(${connection.array(tables, "text")})
 		ORDER BY tc.table_name, tc.constraint_name
 	`;
 
@@ -223,12 +226,12 @@ async function introspectIndexes(
 		SELECT tablename, indexname, indexdef
 		FROM pg_indexes
 		WHERE schemaname = 'public'
-			AND tablename = ANY(${connection.array(tables)})
+			AND tablename = ANY(${connection.array(tables, "text")})
 		ORDER BY tablename, indexname
 	`;
 }
 
-function parseIndexColumns(indexdef: string): {
+export function parseIndexColumns(indexdef: string): {
 	columns: string[];
 	unique: boolean;
 } {
@@ -386,7 +389,7 @@ export async function generateSchema(
 	console.log(`\x1b[32mGenerated\x1b[0m ${rel}`);
 }
 
-function groupBy<T>(arr: T[], key: string): Record<string, T[]> {
+export function groupBy<T>(arr: T[], key: string): Record<string, T[]> {
 	const result: Record<string, T[]> = {};
 	for (const item of arr) {
 		const groupKey = (item as Record<string, unknown>)[key] as string;

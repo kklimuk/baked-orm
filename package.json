@@ -1,14 +1,29 @@
 {
 	"name": "baked-orm",
 	"version": "0.1.0",
+	"description": "Convention-over-configuration database migration tool for Bun. PostgreSQL-native with auto-generated typed schemas.",
+	"license": "MIT",
+	"keywords": [
+		"bun",
+		"postgresql",
+		"migrations",
+		"database",
+		"schema",
+		"orm",
+		"typescript"
+	],
 	"module": "src/index.ts",
 	"type": "module",
 	"bin": {
-		"baked": "./src/cli.ts"
+		"bake": "./src/cli.ts"
 	},
 	"exports": {
 		".": "./src/index.ts"
 	},
+	"files": [
+		"src/",
+		"LICENSE"
+	],
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.8",
 		"@types/bun": "latest",
@@ -20,6 +35,8 @@
 	},
 	"scripts": {
 		"check": "biome check . && knip-bun && tsc --noEmit",
+		"db": "bun run ./src/cli.ts",
+		"test": "bun test",
 		"format": "biome check --write .",
 		"prepare": "husky"
 	},

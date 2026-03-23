@@ -10,7 +10,7 @@ const PREFIXES = {
 	drop: /^(delete_|drop_)/,
 };
 
-function extractTableName(migrationName: string): string | null {
+export function extractTableName(migrationName: string): string | null {
 	for (const pattern of Object.values(PREFIXES)) {
 		if (pattern.test(migrationName)) {
 			return migrationName.replace(pattern, "");
@@ -19,7 +19,7 @@ function extractTableName(migrationName: string): string | null {
 	return null;
 }
 
-function buildTemplate(migrationName: string): string {
+export function buildTemplate(migrationName: string): string {
 	const tableName = extractTableName(migrationName);
 
 	if (tableName && PREFIXES.create.test(migrationName)) {
@@ -83,7 +83,7 @@ export async function down(txn: TransactionSQL) {
 `;
 }
 
-function formatTimestamp(instant: Temporal.Instant): string {
+export function formatTimestamp(instant: Temporal.Instant): string {
 	const dateTime = instant.toZonedDateTimeISO("UTC");
 	const year = String(dateTime.year).padStart(4, "0");
 	const month = String(dateTime.month).padStart(2, "0");

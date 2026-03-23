@@ -2,13 +2,22 @@
 
 import { parseArgs } from "util";
 
+import { runCreate } from "./commands/create";
+import { runDrop } from "./commands/drop";
 import { runGenerate } from "./commands/generate";
 import { runInit } from "./commands/init";
 import { runMigrate } from "./commands/migrate";
 import { runStatus } from "./commands/status";
 import { resolveConfig } from "./config";
 
-const COMMANDS = ["init", "generate", "migrate", "status"] as const;
+const COMMANDS = [
+	"init",
+	"create",
+	"drop",
+	"generate",
+	"migrate",
+	"status",
+] as const;
 type CommandName = (typeof COMMANDS)[number];
 
 function parseCommand(): { command: CommandName; rest: string[] } {
@@ -24,7 +33,7 @@ function parseCommand(): { command: CommandName; rest: string[] } {
 
 	if (!command || !COMMANDS.includes(command)) {
 		console.error(
-			`Usage: bun db <command>\n\nCommands:\n  init        Generate baked.config.ts\n  generate    Create a new migration file\n  migrate     Run migrations (up/down)\n  status      Show migration status`,
+			`Usage: bun db <command>\n\nCommands:\n  init        Generate baked.config.ts\n  create      Create the database\n  drop        Drop the database\n  generate    Create a new migration file\n  migrate     Run migrations (up/down)\n  status      Show migration status`,
 		);
 		process.exit(1);
 	}
@@ -39,6 +48,12 @@ async function main() {
 	switch (command) {
 		case "init":
 			await runInit();
+			break;
+		case "create":
+			await runCreate(config, rest);
+			break;
+		case "drop":
+			await runDrop(config, rest);
 			break;
 		case "generate":
 			await runGenerate(config, rest);
