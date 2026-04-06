@@ -1,5 +1,7 @@
 import type { TableDefinition } from "../types";
+import { runCallbacks } from "./callbacks";
 import { getModelConnection } from "./connection";
+import { ValidationError, ValidationErrors } from "./errors";
 import { QueryBuilder } from "./query";
 import {
 	type AnyAssociationDef,
@@ -24,6 +26,7 @@ import {
 	quoteIdentifier,
 	resolveColumnName,
 } from "./utils";
+import { collectValidationErrors, type ValidationContext } from "./validations";
 
 const MODEL_REGISTRY = new Map<string, AnyModelStatic>();
 
@@ -51,11 +54,50 @@ export function Model<Row>(
 	const primaryKeyField = tableDefinition.primaryKey[0] ?? "id";
 	const reverseMap = buildReverseColumnMap(columns);
 
+	function buildBatchParams(records: Partial<Row>[]): {
+		dbColumns: string[];
+		allValues: unknown[];
+		rowPlaceholders: string[];
+	} {
+		const firstRecord = records[0] as Partial<Row>;
+		const camelKeys = Object.keys(firstRecord);
+		const dbColumns = camelKeys.map((key) => resolveColumnName(key, columns));
+
+		const allValues: unknown[] = [];
+		const rowPlaceholders: string[] = [];
+		let paramIndex = 1;
+
+		for (const record of records) {
+			const placeholders = camelKeys.map(() => `$${paramIndex++}`);
+			rowPlaceholders.push(`(${placeholders.join(", ")})`);
+			for (const key of camelKeys) {
+				allValues.push((record as Record<string, unknown>)[key]);
+			}
+		}
+
+		return { dbColumns, allValues, rowPlaceholders };
+	}
+
+	function hydrateRows<ModelClass extends new () => object>(
+		Klass: ModelClass,
+		// biome-ignore lint/suspicious/noExplicitAny: Bun.sql result rows
+		rows: any[],
+	): InstanceType<ModelClass>[] {
+		const results: InstanceType<ModelClass>[] = [];
+		for (const row of rows) {
+			const mapped = mapRowToModel(row as Record<string, unknown>, reverseMap);
+			results.push(hydrateInstance(Klass, mapped) as InstanceType<ModelClass>);
+		}
+		return results;
+	}
+
 	class ModelBase extends (RowClass as unknown as new () => Record<
 		string,
 		unknown
 	>) {
 		#persisted = false;
+		#validationErrors = new ValidationErrors();
+		#snapshot: Map<string, unknown> = new Map();
 
 		static tableDefinition = tableDefinition;
 		static tableName = tableName;
@@ -76,51 +118,138 @@ export function Model<Row>(
 			return !this.#persisted;
 		}
 
+		get errors(): ValidationErrors {
+			return this.#validationErrors;
+		}
+
 		markPersisted(): void {
 			this.#persisted = true;
+			this.#takeSnapshot();
+		}
+
+		changed(fieldName?: string): boolean {
+			if (fieldName !== undefined) {
+				return this.#snapshot.get(fieldName) !== this[fieldName];
+			}
+			for (const camelKey of Object.keys(columns)) {
+				if (camelKey === primaryKeyField) continue;
+				if (this.#snapshot.get(camelKey) !== this[camelKey]) return true;
+			}
+			return false;
+		}
+
+		changedAttributes(): Record<string, { was: unknown; now: unknown }> {
+			const changes: Record<string, { was: unknown; now: unknown }> = {};
+			for (const camelKey of Object.keys(columns)) {
+				if (camelKey === primaryKeyField) continue;
+				const snapshotValue = this.#snapshot.get(camelKey);
+				const currentValue = this[camelKey];
+				if (snapshotValue !== currentValue) {
+					changes[camelKey] = { was: snapshotValue, now: currentValue };
+				}
+			}
+			return changes;
+		}
+
+		#takeSnapshot(): void {
+			this.#snapshot.clear();
+			for (const camelKey of Object.keys(columns)) {
+				this.#snapshot.set(camelKey, this[camelKey]);
+			}
+		}
+
+		async isValid(): Promise<boolean> {
+			await this.#runValidation();
+			return this.#validationErrors.isEmpty;
 		}
 
 		async save(): Promise<void> {
-			const connection = getModelConnection();
+			const modelClass = this.constructor as unknown as Record<string, unknown>;
+
+			await this.#runValidation();
+			if (!this.#validationErrors.isEmpty) {
+				throw new ValidationError(
+					this.constructor.name,
+					this.#validationErrors,
+				);
+			}
+
+			await runCallbacks("beforeSave", this, modelClass);
 
 			if (this.isNewRecord) {
-				const columnEntries = Object.entries(columns).filter(
-					([camelKey]) => this[camelKey] !== undefined,
-				);
-				const dbColumns = columnEntries.map(
-					([, definition]) => definition.columnName,
-				);
-				const values = columnEntries.map(([camelKey]) => this[camelKey]);
-				const placeholders = dbColumns.map((_, index) => `$${index + 1}`);
-
-				const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`;
-				const rows = await executeQuery(connection, text, values);
-				const row = rows[0] as Record<string, unknown> | undefined;
-				if (row) {
-					Object.assign(this, mapRowToModel(row, reverseMap));
-				}
-				this.#persisted = true;
+				await runCallbacks("beforeCreate", this, modelClass);
+				await this.#performInsert();
+				await runCallbacks("afterCreate", this, modelClass);
 			} else {
-				const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
-				const columnEntries = Object.entries(columns).filter(
-					([camelKey]) => camelKey !== primaryKeyField,
-				);
-				const setClauses = columnEntries.map(
-					([, definition], index) =>
-						`${quoteIdentifier(definition.columnName)} = $${index + 1}`,
-				);
-				const values = [
-					...columnEntries.map(([camelKey]) => this[camelKey]),
-					this[primaryKeyField],
-				];
-
-				const text = `UPDATE ${quoteIdentifier(tableName)} SET ${setClauses.join(", ")} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $${columnEntries.length + 1} RETURNING *`;
-				const rows = await executeQuery(connection, text, values);
-				const row = rows[0] as Record<string, unknown> | undefined;
-				if (row) {
-					Object.assign(this, mapRowToModel(row, reverseMap));
-				}
+				await runCallbacks("beforeUpdate", this, modelClass);
+				await this.#performUpdate();
+				await runCallbacks("afterUpdate", this, modelClass);
 			}
+
+			await runCallbacks("afterSave", this, modelClass);
+		}
+
+		async #runValidation(): Promise<void> {
+			const context: ValidationContext = this.isNewRecord ? "create" : "update";
+			const modelClass = this.constructor as unknown as Record<string, unknown>;
+			this.#validationErrors = new ValidationErrors();
+			await runCallbacks("beforeValidation", this, modelClass);
+			this.#validationErrors = collectValidationErrors(
+				this,
+				context,
+				modelClass,
+			);
+			await runCallbacks("afterValidation", this, modelClass);
+		}
+
+		async #performInsert(): Promise<void> {
+			const connection = getModelConnection();
+			const columnEntries = Object.entries(columns).filter(
+				([camelKey]) => this[camelKey] !== undefined,
+			);
+			const dbColumns = columnEntries.map(
+				([, definition]) => definition.columnName,
+			);
+			const values = columnEntries.map(([camelKey]) => this[camelKey]);
+			const placeholders = dbColumns.map((_, index) => `$${index + 1}`);
+
+			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`;
+			const rows = await executeQuery(connection, text, values);
+			const row = rows[0] as Record<string, unknown> | undefined;
+			if (row) {
+				Object.assign(this, mapRowToModel(row, reverseMap));
+			}
+			this.#persisted = true;
+			this.#takeSnapshot();
+		}
+
+		async #performUpdate(): Promise<void> {
+			const dirtyEntries = Object.entries(columns).filter(
+				([camelKey]) =>
+					camelKey !== primaryKeyField &&
+					this.#snapshot.get(camelKey) !== this[camelKey],
+			);
+
+			if (dirtyEntries.length === 0) return;
+
+			const connection = getModelConnection();
+			const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
+			const setClauses = dirtyEntries.map(
+				([, definition], index) =>
+					`${quoteIdentifier(definition.columnName)} = $${index + 1}`,
+			);
+			const values = [
+				...dirtyEntries.map(([camelKey]) => this[camelKey]),
+				this[primaryKeyField],
+			];
+
+			const text = `UPDATE ${quoteIdentifier(tableName)} SET ${setClauses.join(", ")} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $${dirtyEntries.length + 1} RETURNING *`;
+			const rows = await executeQuery(connection, text, values);
+			const row = rows[0] as Record<string, unknown> | undefined;
+			if (row) {
+				Object.assign(this, mapRowToModel(row, reverseMap));
+			}
+			this.#takeSnapshot();
 		}
 
 		async update(attributes: Partial<Row>): Promise<void> {
@@ -129,11 +258,17 @@ export function Model<Row>(
 		}
 
 		async destroy(): Promise<void> {
+			const modelClass = this.constructor as unknown as Record<string, unknown>;
+
+			await runCallbacks("beforeDestroy", this, modelClass);
+
 			const connection = getModelConnection();
 			const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
 			const text = `DELETE FROM ${quoteIdentifier(tableName)} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $1`;
 			await executeQuery(connection, text, [this[primaryKeyField]]);
 			this.#persisted = false;
+
+			await runCallbacks("afterDestroy", this, modelClass);
 		}
 
 		async reload(): Promise<void> {
@@ -147,6 +282,7 @@ export function Model<Row>(
 			if (row) {
 				Object.assign(this, mapRowToModel(row, reverseMap));
 			}
+			this.#takeSnapshot();
 		}
 
 		async load(associationName: string): Promise<unknown> {
@@ -267,35 +403,14 @@ export function Model<Row>(
 		): Promise<InstanceType<Subclass>[]> {
 			if (records.length === 0) return [];
 
+			const { dbColumns, allValues, rowPlaceholders } =
+				buildBatchParams(records);
+
 			const connection = getModelConnection();
-			const firstRecord = records[0] as Partial<Row>;
-			const camelKeys = Object.keys(firstRecord);
-			const dbColumns = camelKeys.map((key) => resolveColumnName(key, columns));
-
-			const allValues: unknown[] = [];
-			const rowPlaceholders: string[] = [];
-			let paramIndex = 1;
-
-			for (const record of records) {
-				const placeholders = camelKeys.map(() => `$${paramIndex++}`);
-				rowPlaceholders.push(`(${placeholders.join(", ")})`);
-				for (const key of camelKeys) {
-					allValues.push((record as Record<string, unknown>)[key]);
-				}
-			}
-
 			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")} RETURNING *`;
 			const rows = await executeQuery(connection, text, allValues);
 
-			const results: InstanceType<Subclass>[] = [];
-			for (const row of rows) {
-				const mapped = mapRowToModel(
-					row as Record<string, unknown>,
-					reverseMap,
-				);
-				results.push(hydrateInstance(this, mapped) as InstanceType<Subclass>);
-			}
-			return results;
+			return hydrateRows(this, rows);
 		}
 
 		static async upsert<Subclass extends typeof ModelBase>(
@@ -331,22 +446,8 @@ export function Model<Row>(
 		): Promise<InstanceType<Subclass>[]> {
 			if (records.length === 0) return [];
 
-			const connection = getModelConnection();
-			const firstRecord = records[0] as Partial<Row>;
-			const camelKeys = Object.keys(firstRecord);
-			const dbColumns = camelKeys.map((key) => resolveColumnName(key, columns));
-
-			const allValues: unknown[] = [];
-			const rowPlaceholders: string[] = [];
-			let paramIndex = 1;
-
-			for (const record of records) {
-				const placeholders = camelKeys.map(() => `$${paramIndex++}`);
-				rowPlaceholders.push(`(${placeholders.join(", ")})`);
-				for (const key of camelKeys) {
-					allValues.push((record as Record<string, unknown>)[key]);
-				}
-			}
+			const { dbColumns, allValues, rowPlaceholders } =
+				buildBatchParams(records);
 
 			const { conflictClause, updateSet } = buildConflictClause(
 				dbColumns,
@@ -354,18 +455,11 @@ export function Model<Row>(
 				columns,
 			);
 
+			const connection = getModelConnection();
 			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")} ON CONFLICT (${conflictClause}) DO UPDATE SET ${updateSet} RETURNING *`;
 			const rows = await executeQuery(connection, text, allValues);
 
-			const results: InstanceType<Subclass>[] = [];
-			for (const row of rows) {
-				const mapped = mapRowToModel(
-					row as Record<string, unknown>,
-					reverseMap,
-				);
-				results.push(hydrateInstance(this, mapped) as InstanceType<Subclass>);
-			}
-			return results;
+			return hydrateRows(this, rows);
 		}
 
 		static hasMany(

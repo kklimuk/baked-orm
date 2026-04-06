@@ -278,6 +278,42 @@ async function loadPolymorphicBelongsTo(
 	return hydrateInstance(targetModel, mapped);
 }
 
+type AssociationTree = Map<string, AssociationTree>;
+
+function parseIncludesPaths(paths: string[]): AssociationTree {
+	const tree: AssociationTree = new Map();
+	for (const path of paths) {
+		const segments = path.split(".");
+		let currentLevel = tree;
+		for (const segment of segments) {
+			if (!currentLevel.has(segment)) {
+				currentLevel.set(segment, new Map());
+			}
+			currentLevel = currentLevel.get(segment) as AssociationTree;
+		}
+	}
+	return tree;
+}
+
+function collectLoadedRecords(
+	parentRecords: Record<string, unknown>[],
+	associationName: string,
+): Record<string, unknown>[] {
+	const collected: Record<string, unknown>[] = [];
+	for (const parent of parentRecords) {
+		const loaded = parent[associationName];
+		if (loaded === null || loaded === undefined) continue;
+		if (Array.isArray(loaded)) {
+			for (const item of loaded) {
+				collected.push(item as Record<string, unknown>);
+			}
+		} else {
+			collected.push(loaded as Record<string, unknown>);
+		}
+	}
+	return collected;
+}
+
 export async function preloadAssociations<Row>(
 	records: Row[],
 	associationNames: string[],
@@ -285,19 +321,33 @@ export async function preloadAssociations<Row>(
 	modelClass: any,
 	tableDefinition: TableDefinition<Row>,
 ): Promise<void> {
+	const tree = parseIncludesPaths(associationNames);
+	await preloadAssociationTree(records, tree, modelClass, tableDefinition);
+}
+
+async function preloadAssociationTree<Row>(
+	records: Row[],
+	tree: AssociationTree,
+	// biome-ignore lint/suspicious/noExplicitAny: model classes have dynamic static properties
+	modelClass: any,
+	tableDefinition: TableDefinition<Row>,
+): Promise<void> {
+	if (records.length === 0 || tree.size === 0) return;
+
 	const connection = getModelConnection();
 	const primaryKey = (tableDefinition.primaryKey[0] ?? "id") as keyof Row &
 		string;
 
 	await Promise.all(
-		associationNames.map((associationName) => {
+		Array.from(tree.entries()).map(async ([associationName, childTree]) => {
 			const definition = findAssociationDefinition(modelClass, associationName);
 			if (!definition) {
 				throw new Error(
 					`Association "${associationName}" not found on ${modelClass.name}`,
 				);
 			}
-			return preloadSingleAssociation(
+
+			await preloadSingleAssociation(
 				records,
 				associationName,
 				definition,
@@ -306,6 +356,24 @@ export async function preloadAssociations<Row>(
 				primaryKey,
 				connection,
 			);
+
+			if (childTree.size > 0) {
+				const targetModel = resolveModel(definition);
+				const targetDef = targetModel.tableDefinition as TableDefinition;
+				const childRecords = collectLoadedRecords(
+					records as unknown as Record<string, unknown>[],
+					associationName,
+				);
+
+				if (childRecords.length > 0) {
+					await preloadAssociationTree(
+						childRecords,
+						childTree,
+						targetModel,
+						targetDef,
+					);
+				}
+			}
 		}),
 	);
 }

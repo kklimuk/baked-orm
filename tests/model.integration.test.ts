@@ -664,6 +664,116 @@ describe("Eager loading", () => {
 	});
 });
 
+describe("Nested eager loading", () => {
+	test("includes with dotted path: hasMany -> belongsTo", async () => {
+		const user = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		await Post.create({ userId: user.id, title: "Post 1" });
+		await Post.create({ userId: user.id, title: "Post 2" });
+
+		const alice = await User.all().includes("posts.author").first();
+		expect(alice).not.toBeNull();
+		expect(alice?.posts).toHaveLength(2);
+		for (const post of alice?.posts ?? []) {
+			expect(post.author).not.toBeNull();
+			expect(post.author?.name).toBe("Alice");
+		}
+	});
+
+	test("includes with dotted path: hasMany -> hasMany (polymorphic)", async () => {
+		const user = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		const post = await Post.create({ userId: user.id, title: "Post 1" });
+		await Comment.create({
+			commentableType: "Post",
+			commentableId: post.id,
+			body: "Great post!",
+		});
+		await Comment.create({
+			commentableType: "Post",
+			commentableId: post.id,
+			body: "Thanks!",
+		});
+
+		const alice = await User.all().includes("posts.comments").first();
+		expect(alice).not.toBeNull();
+		expect(alice?.posts).toHaveLength(1);
+		expect(alice?.posts.at(0)?.comments).toHaveLength(2);
+	});
+
+	test("multiple nested paths in one call", async () => {
+		const user = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		const post = await Post.create({ userId: user.id, title: "Post 1" });
+		await Comment.create({
+			commentableType: "Post",
+			commentableId: post.id,
+			body: "Nice!",
+		});
+
+		const alice = await User.all()
+			.includes("posts.comments", "posts.author")
+			.first();
+		expect(alice).not.toBeNull();
+		const firstPost = alice?.posts.at(0);
+		expect(alice?.posts).toHaveLength(1);
+		expect(firstPost?.comments).toHaveLength(1);
+		expect(firstPost?.author).not.toBeNull();
+		expect(firstPost?.author?.name).toBe("Alice");
+	});
+
+	test("mixed shallow and nested includes", async () => {
+		const user = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		const post = await Post.create({ userId: user.id, title: "Post 1" });
+		await Comment.create({
+			commentableType: "Post",
+			commentableId: post.id,
+			body: "Comment!",
+		});
+
+		const firstPost = await Post.all().includes("author", "comments").first();
+		expect(firstPost).not.toBeNull();
+		expect(firstPost?.author).not.toBeNull();
+		expect(firstPost?.comments).toHaveLength(1);
+	});
+
+	test("nested includes with empty results at child level", async () => {
+		const user = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		await Post.create({ userId: user.id, title: "Post 1" });
+
+		const alice = await User.all().includes("posts.comments").first();
+		expect(alice).not.toBeNull();
+		expect(alice?.posts).toHaveLength(1);
+		expect(alice?.posts.at(0)?.comments).toEqual([]);
+	});
+
+	test("nested includes: belongsTo -> hasMany", async () => {
+		const user = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		await Post.create({ userId: user.id, title: "Post 1" });
+		await Post.create({ userId: user.id, title: "Post 2" });
+
+		const firstPost = await Post.all().includes("author.posts").first();
+		expect(firstPost).not.toBeNull();
+		expect(firstPost?.author).not.toBeNull();
+		expect(firstPost?.author?.posts).toHaveLength(2);
+	});
+});
+
 describe("Model(table, associations) API — no declare needed", () => {
 	// When models don't have circular references (or live in separate files),
 	// pass associations to Model() directly — TypeScript infers the types.
@@ -762,5 +872,100 @@ describe("Batch operations", () => {
 		});
 
 		expect(names).toEqual(["Alice"]);
+	});
+});
+
+describe("Dirty tracking", () => {
+	test("changed() returns false for freshly loaded record", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		const user = await User.find(
+			(await User.findBy({ email: "alice@test.com" }))?.id,
+		);
+		expect(user.changed()).toBe(false);
+	});
+
+	test("changed() returns true after modifying a field", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+		expect(user.changed()).toBe(false);
+		user.name = "Alicia";
+		expect(user.changed()).toBe(true);
+	});
+
+	test("changed(fieldName) detects specific field changes", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+		user.name = "Alicia";
+		expect(user.changed("name")).toBe(true);
+		expect(user.changed("email")).toBe(false);
+	});
+
+	test("changedAttributes() returns was/now values", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+		user.name = "Alicia";
+		const changes = user.changedAttributes();
+		expect(changes.name).toEqual({ was: "Alice", now: "Alicia" });
+		expect(changes.email).toBeUndefined();
+	});
+
+	test("changed() resets to false after save", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+		user.name = "Alicia";
+		expect(user.changed()).toBe(true);
+		await user.save();
+		expect(user.changed()).toBe(false);
+	});
+
+	test("save() with no changes skips UPDATE", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+
+		const queries: string[] = [];
+		await connect(connection, {
+			onQuery: ({ text }) => {
+				queries.push(text);
+			},
+		});
+
+		await user.save();
+		const updateQueries = queries.filter((query) => query.startsWith("UPDATE"));
+		expect(updateQueries).toHaveLength(0);
+	});
+
+	test("save() with one changed field only sends that column", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+
+		const queries: string[] = [];
+		await connect(connection, {
+			onQuery: ({ text }) => {
+				queries.push(text);
+			},
+		});
+
+		user.name = "Alicia";
+		await user.save();
+
+		const updateQuery = queries.find((query) => query.startsWith("UPDATE"));
+		expect(updateQuery).toBeDefined();
+		expect(updateQuery).toContain('"name"');
+		expect(updateQuery).not.toContain('"email"');
+	});
+
+	test("changed() resets after reload", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+		user.name = "Modified";
+		expect(user.changed()).toBe(true);
+		await user.reload();
+		expect(user.changed()).toBe(false);
+		expect(user.name).toBe("Alice");
+	});
+
+	test("new records report all set attributes as changed", () => {
+		const user = new User({ name: "Alice", email: "alice@test.com" });
+		expect(user.changed()).toBe(true);
+		expect(user.changed("name")).toBe(true);
+		expect(user.changed("email")).toBe(true);
+	});
+
+	test("changedAttributes() is empty after create", async () => {
+		const user = await User.create({ name: "Alice", email: "alice@test.com" });
+		expect(user.changedAttributes()).toEqual({});
 	});
 });

@@ -1,4 +1,5 @@
 import type { TableDefinition } from "../types";
+import type { ValidationErrors } from "./errors";
 import type { QueryBuilder } from "./query";
 
 export class RecordNotFoundError extends Error {
@@ -168,11 +169,15 @@ export function hasManyThrough<Target extends AnyModelStatic>(
 /** Instance methods available on all model records. Non-generic so TypeScript shows the name cleanly. */
 export interface BaseModel {
 	readonly isNewRecord: boolean;
+	readonly errors: ValidationErrors;
 	markPersisted(): void;
 	save(): Promise<void>;
 	update(attributes: Record<string, unknown>): Promise<void>;
 	destroy(): Promise<void>;
 	reload(): Promise<void>;
+	isValid(): Promise<boolean>;
+	changed(fieldName?: string): boolean;
+	changedAttributes(): Record<string, { was: unknown; now: unknown }>;
 	load<K extends keyof this>(name: K & string): Promise<this[K]>;
 	toJSON(): Record<string, unknown>;
 }

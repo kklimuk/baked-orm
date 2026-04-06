@@ -1,6 +1,6 @@
 # baked-orm
 
-A convention-over-configuration database migration tool for Bun. TypeScript-first, PostgreSQL-native, with auto-generated typed schemas.
+A convention-over-configuration ORM and migration tool for Bun. TypeScript-first, PostgreSQL-native, with auto-generated typed schemas, ActiveRecord-inspired querying, validations, callbacks, and dirty tracking.
 
 ## Install
 
@@ -119,7 +119,7 @@ After each migration, baked-orm introspects your database and generates a typed 
 
 ## ORM
 
-baked-orm includes an ActiveRecord-inspired ORM. Define models by extending the generated Row classes:
+baked-orm includes an ActiveRecord-inspired ORM. Define models by wrapping the generated table definitions with `Model()`:
 
 ### Setup
 
@@ -192,8 +192,8 @@ const users = await User.createMany([
 ]);
 
 // Find
-const user = await User.find(id);           // throws RecordNotFoundError
-const user = await User.findBy({ email });   // null if missing
+const found = await User.find(id);           // throws RecordNotFoundError
+const maybe = await User.findBy({ email });   // null if missing
 
 // Update
 await user.update({ name: "Alice Smith" });
@@ -249,6 +249,34 @@ const users = await User.where({ active: true }).includes("posts").toArray();
 // users[0].posts is already loaded — no extra query
 ```
 
+Nested eager loading uses dotted paths:
+
+```ts
+const users = await User.all()
+  .includes("posts.comments", "posts.author", "profile")
+  .toArray();
+// users[0].posts[0].comments — loaded in one query per level
+// users[0].posts[0].author   — also loaded
+```
+
+### Dirty tracking
+
+Only modified columns are sent in UPDATE queries. This prevents last-write-wins on concurrent requests:
+
+```ts
+const user = await User.find(id);
+user.changed();               // false
+user.name = "New Name";
+user.changed();               // true
+user.changed("name");         // true
+user.changed("email");        // false
+user.changedAttributes();     // { name: { was: "Old", now: "New" } }
+await user.save();            // UPDATE users SET "name" = $1 WHERE "id" = $2
+// Only the "name" column is sent — not all columns
+```
+
+Saving a persisted record with no changes skips the UPDATE entirely.
+
 ### Transactions
 
 All queries inside a `transaction()` block automatically use the same connection:
@@ -281,6 +309,120 @@ await User.all().findInBatches(async (batch) => {
 
 Both use cursor-based pagination (keyset pagination on the primary key) — safe for large tables and concurrent modifications.
 
+### Validations
+
+Declare field-level validations as static properties — Rails-style, with structured error handling:
+
+```ts
+import { Model, validates, validate } from "baked-orm";
+
+class User extends Model(users, {
+  posts: hasMany(() => Post),
+}) {
+  static validations = {
+    name: validates("presence"),
+    email: [
+      validates("presence"),
+      validates("email"),
+      validates("length", { maximum: 255 }),
+    ],
+    age: validates("numericality", { greaterThanOrEqualTo: 0, integer: true }),
+    role: validates("inclusion", { in: ["admin", "user", "moderator"] }),
+  };
+
+  // Record-level custom validations
+  static customValidations = [
+    validate((record) => {
+      if (record.name === record.email) {
+        return { name: "must be different from email" };
+      }
+    }),
+  ];
+}
+```
+
+Built-in validators: `presence`, `length`, `numericality`, `format`, `inclusion`, `exclusion`, `email`.
+
+All validators accept `message?`, `on?: "create" | "update"`, and `if?: (record) => boolean` for conditional execution.
+
+```ts
+// Conditional: only on create
+validates("presence", { on: "create" })
+
+// Conditional: only when a condition is met
+validates("presence", { if: (record) => record.role === "admin" })
+```
+
+Register your own reusable validators:
+
+```ts
+import { defineValidator, validates } from "baked-orm";
+
+defineValidator("companyEmail", (value, record, options) => {
+  if (typeof value !== "string" || !value.endsWith("@company.com")) {
+    return options.message ?? "must be a company email address";
+  }
+});
+
+// Use like any built-in
+class Employee extends Model(employees) {
+  static validations = {
+    email: validates("companyEmail"),
+  };
+}
+```
+
+Validation errors are structured and inspectable:
+
+```ts
+import { ValidationError } from "baked-orm";
+
+try {
+  await user.save();
+} catch (error) {
+  if (error instanceof ValidationError) {
+    error.errors.get("email");         // ["is not a valid email address"]
+    error.errors.fullMessages();       // ["Email is not a valid email address"]
+    error.errors.toJSON();             // { email: ["is not a valid email address"] }
+  }
+}
+
+// Or check without throwing:
+if (!await user.isValid()) {
+  console.log(user.errors.fullMessages());
+}
+```
+
+**Note:** Bulk operations (`createMany`, `upsertAll`, `updateAll`, `deleteAll`) skip validations and callbacks for performance.
+
+### Callbacks
+
+Lifecycle callbacks are declared as static arrays on the model class:
+
+```ts
+class User extends Model(users) {
+  static beforeSave = [(record) => {
+    record.email = record.email.toLowerCase();
+  }];
+
+  static afterCreate = [async (record) => {
+    await AuditLog.create({ action: "user_created", userId: record.id });
+  }];
+
+  static beforeDestroy = [async (record) => {
+    await record.load("posts");
+  }];
+}
+```
+
+Available hooks (in execution order):
+
+**Save:** `beforeValidation` → validations → `afterValidation` → `beforeSave` → `beforeCreate`/`beforeUpdate` → SQL → `afterCreate`/`afterUpdate` → `afterSave`
+
+**Destroy:** `beforeDestroy` → SQL → `afterDestroy`
+
+If a `before*` callback throws, the operation aborts.
+
 ### camelCase convention
 
 All snake_case DB column names are automatically converted to camelCase in generated Row classes. You never write `user_id` — always `userId`. The actual DB column name is stored in `ColumnDefinition.columnName` for the query builder to translate back.
@@ -298,12 +440,15 @@ Override with `baked.config.ts`:
 ```ts
 import { defineConfig } from "baked-orm";
 
+// Connect with a URL:
+export default defineConfig({
+  database: Bun.env.POSTGRES_URL ?? Bun.env.DATABASE_URL,
+});
+
+// Or with individual options:
 export default defineConfig({
   migrationsPath: "./db/migrations",
   schemaPath: "./db/schema.ts",
-  // Connect with a URL
-  database: Bun.env.POSTGRES_URL ?? Bun.env.DATABASE_URL,
-  // Or with individual options
   database: {
     hostname: Bun.env.PGHOST,
     port: Number(Bun.env.PGPORT),
@@ -315,6 +460,25 @@ export default defineConfig({
 ```
 
 If `database` is omitted, Bun's default SQL driver is used (reads `PG*` env vars from `.env`).
+
+### Connection pool
+
+When using object-style database configuration, you can tune the connection pool:
+
+```ts
+export default defineConfig({
+  database: {
+    hostname: "localhost",
+    database: "myapp",
+    max: 20,                // Max connections (default: 10)
+    idleTimeout: 30,        // Seconds before closing idle connections (default: 0)
+    maxLifetime: 3600,      // Max connection lifetime in seconds (default: 0)
+    connectionTimeout: 10,  // Seconds to wait for a connection (default: 30)
+  },
+});
+```
+
+Pool options are passed directly to Bun's SQL driver. URL-style `database` strings use Bun's defaults.
 
 ## Development
 

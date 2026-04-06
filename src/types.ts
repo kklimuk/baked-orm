@@ -36,6 +36,14 @@ export type DatabaseConfig = {
 	username?: string;
 	password?: string;
 	database?: string;
+	/** Maximum number of connections in the pool (default: 10) */
+	max?: number;
+	/** Seconds before closing an idle connection (default: 0, no timeout) */
+	idleTimeout?: number;
+	/** Maximum lifetime of a connection in seconds (default: 0, no limit) */
+	maxLifetime?: number;
+	/** Seconds to wait when establishing a connection (default: 30) */
+	connectionTimeout?: number;
 };
 
 export type BakedConfig = {
