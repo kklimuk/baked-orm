@@ -29,5 +29,8 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Publish to npm
         run: npm publish --access public
