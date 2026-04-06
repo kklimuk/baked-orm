@@ -63,7 +63,7 @@ describe("generateSchema", () => {
 		expect(content).toContain("declare id: string");
 		expect(content).toContain("declare name: string");
 		expect(content).toContain("declare email: string");
-		expect(content).toContain("declare created_at: Date");
+		expect(content).toContain("declare createdAt: Date");
 		expect(content).toContain('version: "20240101000000"');
 		expect(content).toContain("tables: { users }");
 	});
@@ -131,7 +131,7 @@ describe("generateSchema", () => {
 		const content = await Bun.file(config.schemaPath).text();
 
 		expect(content).toContain("declare bio: string | null");
-		expect(content).toContain("declare avatar_url: string | null");
+		expect(content).toContain("declare avatarUrl: string | null");
 	});
 
 	test("excludes schema_migrations table", async () => {

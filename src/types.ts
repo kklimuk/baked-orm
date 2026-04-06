@@ -2,6 +2,7 @@ export type ColumnDefinition = {
 	type: string;
 	nullable: boolean;
 	default?: string;
+	columnName: string;
 };
 
 export type IndexDefinition = {
@@ -15,6 +16,7 @@ export type ForeignKeyDefinition = {
 };
 
 export type TableDefinition<Row = unknown> = {
+	tableName: string;
 	columns: Record<string, ColumnDefinition>;
 	primaryKey: string[];
 	indexes: Record<string, IndexDefinition>;

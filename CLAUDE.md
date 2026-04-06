@@ -1,6 +1,6 @@
 # baked-orm
 
-Database migration tool for Bun. PostgreSQL only via `Bun.sql`.
+Database migration tool and ORM for Bun. PostgreSQL only via `Bun.sql`.
 
 ## Commands
 
@@ -16,10 +16,11 @@ Database migration tool for Bun. PostgreSQL only via `Bun.sql`.
 - No single or two-letter variable names. Use descriptive names (`connection` not `db`, `txn` not `tx`, `row` not `r`)
 - Use `@js-temporal/polyfill` for date/time operations, not `Date` constructors
 - Tabs for indentation, double quotes for strings (enforced by biome)
+- camelCase for all JS/TS property names; snake_case DB columns are auto-converted
 
 ## Tooling
 
-- **Biome** for linting and formatting. `useNodejsImportProtocol` rule is disabled
+- **Biome** for linting and formatting. `useNodejsImportProtocol` and `noThisInStatic` rules are disabled
 - **Knip** for unused exports/deps detection. Run with `knip-bun` (not `knip`) due to ESM compat
 - **Husky** pre-commit hook runs all three checks
 - **TypeScript** strict mode, `noUncheckedIndexedAccess` enabled
@@ -37,9 +38,24 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 
 ## Architecture
 
+### Migration system
 - `src/cli.ts` — CLI entry, parses commands via `util.parseArgs`
 - `src/config.ts` — loads `baked.config.ts`, provides `getConnection()` for DB access
-- `src/runner.ts` — migration discovery, advisory locking, transactional up/down execution
-- `src/introspect.ts` — queries `information_schema` + `pg_type` to generate typed `db/schema.ts`
+- `src/runner.ts` — migration discovery, advisory locking, transactional up/down execution, duplicate timestamp detection
+- `src/introspect.ts` — queries `information_schema` + `pg_type` to generate typed `db/schema.ts` with camelCase properties and `columnName` mapping
 - `src/commands/` — one file per CLI command (init, create, drop, generate, migrate, status)
-- `tests/` — unit tests for pure functions, CLI integration tests via subprocess spawning
+
+### ORM layer
+- `src/model/base.ts` — `Model()` mixin function. Returns a class extending the generated Row class with CRUD, query, and association methods. Uses `this` in static methods for polymorphic subclass support
+- `src/model/query.ts` — immutable, chainable `QueryBuilder`. Uses parameterized queries via `executeQuery()` for SQL injection safety. Thenable via `then()`. Includes `findEach`/`findInBatches` for cursor-based batch processing
+- `src/model/associations.ts` — `loadAssociation()` and `preloadAssociations()` for belongsTo, hasOne, hasMany, hasManyThrough, and polymorphic associations. Model registry maps class names to constructors for polymorphic resolution
+- `src/model/connection.ts` — connection singleton wrapping existing config system. `AsyncLocalStorage` scopes transactions. Supports `onQuery` callback for query logging
+- `src/model/utils.ts` — shared utilities: `quoteIdentifier`, `resolveColumnName`, `buildReverseColumnMap`, `mapRowToModel`, `hydrateInstance`, `executeQuery` (with logging), `buildConflictClause`
+- `src/model/types.ts` — `ModelStatic<Row>`, `BaseModel`, `AnyModelStatic`, `AssociationDefinition`, `RecordNotFoundError`. Also exports branded association types (`HasManyDef`, `HasOneDef`, `BelongsToDef`, `HasManyThroughDef`) and standalone factory functions (`hasMany`, `hasOne`, `belongsTo`, `hasManyThrough`) for the `Model(table, associations)` API
+
+### Association declaration patterns
+- **Preferred (separate files):** `Model(table, { posts: hasMany(() => Post) })` — associations passed to `Model()`, types inferred via branded defs + `AssociationProperties` mapped type. No `declare` needed
+- **Same-file circular refs:** `static posts = User.hasMany(() => Post)` + `declare posts: Post[]` — TypeScript can't resolve circular base expressions in the same file, so one side of a bidirectional relationship needs the static property + declare pattern
+
+### Tests
+- `tests/` — unit tests for pure functions, integration tests for migrations and ORM (CRUD, queries, associations, transactions, eager loading)

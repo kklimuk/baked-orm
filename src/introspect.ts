@@ -149,6 +149,18 @@ export function toPascalCase(input: string): string {
 		.join("");
 }
 
+export function toCamelCase(input: string): string {
+	const parts = input.split("_");
+	const first = parts[0] ?? "";
+	return (
+		first +
+		parts
+			.slice(1)
+			.map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+			.join("")
+	);
+}
+
 async function introspectTables(connection: SQL): Promise<string[]> {
 	const rows: { table_name: string }[] = await connection`
 		SELECT table_name
@@ -311,11 +323,15 @@ export async function generateSchema(
 		for (const col of tableCols) {
 			const tsType = mapPgType(col.data_type, compositeNames);
 			const nullable = col.is_nullable === "YES" ? " | null" : "";
-			lines.push(`\tdeclare ${col.column_name}: ${tsType}${nullable};`);
+			const camelName = toCamelCase(col.column_name);
+			lines.push(`\tdeclare ${camelName}: ${tsType}${nullable};`);
 		}
 		lines.push("}", "");
 
-		lines.push(`const ${tableName}: TableDefinition<${rowClassName}> = {`);
+		lines.push(
+			`export const ${tableName}: TableDefinition<${rowClassName}> = {`,
+		);
+		lines.push(`\ttableName: ${JSON.stringify(tableName)},`);
 
 		lines.push("\tcolumns: {");
 		for (const col of tableCols) {
@@ -326,14 +342,15 @@ export async function generateSchema(
 			const defaultStr = col.column_default
 				? `, default: ${JSON.stringify(col.column_default)}`
 				: "";
+			const camelName = toCamelCase(col.column_name);
 			lines.push(
-				`\t\t${col.column_name}: { type: ${JSON.stringify(colType)}, nullable: ${nullable}${defaultStr} },`,
+				`\t\t${camelName}: { type: ${JSON.stringify(colType)}, nullable: ${nullable}${defaultStr}, columnName: ${JSON.stringify(col.column_name)} },`,
 			);
 		}
 		lines.push("\t},");
 
 		lines.push(
-			`\tprimaryKey: [${tablePks.map((key) => JSON.stringify(key)).join(", ")}],`,
+			`\tprimaryKey: [${tablePks.map((key) => JSON.stringify(toCamelCase(key))).join(", ")}],`,
 		);
 
 		lines.push("\tindexes: {");
@@ -361,8 +378,8 @@ export async function generateSchema(
 				};
 				fksByConstraint.set(foreignKey.constraint_name, entry);
 			}
-			entry.columns.push(foreignKey.column_name);
-			entry.foreignColumns.push(foreignKey.foreign_column_name);
+			entry.columns.push(toCamelCase(foreignKey.column_name));
+			entry.foreignColumns.push(toCamelCase(foreignKey.foreign_column_name));
 		}
 		for (const [constraintName, foreignKey] of fksByConstraint) {
 			lines.push(

@@ -18,6 +18,9 @@
 			"recommended": true,
 			"style": {
 				"useNodejsImportProtocol": "off"
+			},
+			"complexity": {
+				"noThisInStatic": "off"
 			}
 		}
 	},

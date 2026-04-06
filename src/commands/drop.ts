@@ -1,9 +1,6 @@
 import { getMaintenanceConnection } from "../config";
+import { quoteIdentifier } from "../model/utils";
 import type { ResolvedConfig } from "../types";
-
-function escapeIdentifier(name: string): string {
-	return `"${name.replace(/"/g, '""')}"`;
-}
 
 export async function runDrop(config: ResolvedConfig, args: string[]) {
 	const databaseName = args[0];
@@ -14,7 +11,7 @@ export async function runDrop(config: ResolvedConfig, args: string[]) {
 
 	const connection = getMaintenanceConnection(config);
 	try {
-		await connection.unsafe(`DROP DATABASE ${escapeIdentifier(databaseName)}`);
+		await connection.unsafe(`DROP DATABASE ${quoteIdentifier(databaseName)}`);
 		console.log(`\x1b[32mDropped\x1b[0m database ${databaseName}`);
 	} catch (error) {
 		if (error instanceof Error && error.message.includes("does not exist")) {

@@ -38,6 +38,22 @@ export async function discoverMigrations(
 	migrations.sort((first, second) =>
 		first.version.localeCompare(second.version),
 	);
+
+	const duplicates = findDuplicateVersions(migrations);
+	if (duplicates.length > 0) {
+		for (const { version, files } of duplicates) {
+			console.error(
+				`\x1b[31mConflict\x1b[0m Multiple migrations share timestamp ${version}:`,
+			);
+			for (const file of files) {
+				console.error(`  - ${file}`);
+			}
+		}
+		throw new Error(
+			"Migration timestamp conflict detected. Rename one of the conflicting migrations to resolve.",
+		);
+	}
+
 	return migrations;
 }
 
@@ -173,4 +189,22 @@ export async function migrateDown(
 
 function lastApplied(applied: Set<string>): string | undefined {
 	return [...applied].sort().at(-1);
+}
+
+function findDuplicateVersions(
+	migrations: Migration[],
+): { version: string; files: string[] }[] {
+	const byVersion = new Map<string, string[]>();
+	for (const migration of migrations) {
+		const existing = byVersion.get(migration.version) ?? [];
+		existing.push(migration.file);
+		byVersion.set(migration.version, existing);
+	}
+	const duplicates: { version: string; files: string[] }[] = [];
+	for (const [version, files] of byVersion) {
+		if (files.length > 1) {
+			duplicates.push({ version, files });
+		}
+	}
+	return duplicates;
 }

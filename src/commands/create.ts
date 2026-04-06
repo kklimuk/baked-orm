@@ -1,9 +1,6 @@
 import { getMaintenanceConnection } from "../config";
+import { quoteIdentifier } from "../model/utils";
 import type { ResolvedConfig } from "../types";
-
-function escapeIdentifier(name: string): string {
-	return `"${name.replace(/"/g, '""')}"`;
-}
 
 export async function runCreate(config: ResolvedConfig, args: string[]) {
 	const databaseName = args[0];
@@ -14,9 +11,7 @@ export async function runCreate(config: ResolvedConfig, args: string[]) {
 
 	const connection = getMaintenanceConnection(config);
 	try {
-		await connection.unsafe(
-			`CREATE DATABASE ${escapeIdentifier(databaseName)}`,
-		);
+		await connection.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
 		console.log(`\x1b[32mCreated\x1b[0m database ${databaseName}`);
 	} catch (error) {
 		if (error instanceof Error && error.message.includes("already exists")) {

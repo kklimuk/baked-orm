@@ -67,6 +67,28 @@ describe("discoverMigrations", () => {
 		}
 	});
 
+	test("throws on duplicate timestamps", async () => {
+		const tempDir = join(tmpdir(), `baked-test-${Date.now()}`);
+		await mkdir(tempDir, { recursive: true });
+
+		try {
+			await writeFile(
+				join(tempDir, "20240115083045.create_users.ts"),
+				"export async function up() {} export async function down() {}",
+			);
+			await writeFile(
+				join(tempDir, "20240115083045.create_posts.ts"),
+				"export async function up() {} export async function down() {}",
+			);
+
+			expect(discoverMigrations(makeConfig(tempDir))).rejects.toThrow(
+				"Migration timestamp conflict detected",
+			);
+		} finally {
+			await rm(tempDir, { recursive: true });
+		}
+	});
+
 	test("handles migration names with multiple dots", async () => {
 		const tempDir = join(tmpdir(), `baked-test-${Date.now()}`);
 		await mkdir(tempDir, { recursive: true });

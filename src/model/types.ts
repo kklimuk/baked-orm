@@ -1,0 +1,264 @@
+import type { TableDefinition } from "../types";
+import type { QueryBuilder } from "./query";
+
+export class RecordNotFoundError extends Error {
+	modelName: string;
+	primaryKey: unknown;
+
+	constructor(modelName: string, primaryKey: unknown) {
+		super(`${modelName} with primary key ${String(primaryKey)} not found`);
+		this.name = "RecordNotFoundError";
+		this.modelName = modelName;
+		this.primaryKey = primaryKey;
+	}
+}
+
+export type OrderDirection = "ASC" | "DESC";
+
+export type AssociationType =
+	| "belongsTo"
+	| "hasOne"
+	| "hasMany"
+	| "hasManyThrough";
+
+export type AssociationDefinition = {
+	readonly associationType: AssociationType;
+	readonly model?: () => AnyModelStatic;
+	readonly foreignKey?: string;
+	readonly primaryKey?: string;
+	readonly polymorphic?: boolean;
+	readonly as?: string;
+	readonly through?: string;
+	readonly source?: string;
+};
+
+/** Minimal interface for association model references — avoids strict Row generic constraints */
+export interface AnyModelStatic {
+	// biome-ignore lint/suspicious/noExplicitAny: association targets are resolved dynamically
+	new (...args: any[]): any;
+	tableDefinition: TableDefinition;
+	tableName: string;
+	primaryKeyField: string;
+	name: string;
+}
+
+export type UpsertOptions = {
+	conflictColumns: string[];
+};
+
+// --- Branded association definition types ---
+// These carry the target model type so TypeScript can infer instance properties
+
+export type HasManyDef<Target> = AssociationDefinition & {
+	readonly __brand: "hasMany";
+	readonly __target: Target[];
+};
+
+export type HasOneDef<Target> = AssociationDefinition & {
+	readonly __brand: "hasOne";
+	readonly __target: Target | null;
+};
+
+export type BelongsToDef<Target> = AssociationDefinition & {
+	readonly __brand: "belongsTo";
+	readonly __target: Target | null;
+};
+
+export type HasManyThroughDef<Target> = AssociationDefinition & {
+	readonly __brand: "hasManyThrough";
+	readonly __target: Target[];
+};
+
+export type PolymorphicBelongsToDef<Target = unknown> =
+	AssociationDefinition & {
+		readonly __brand: "belongsToPolymorphic";
+		readonly __target: Target | null;
+	};
+
+/** Any branded association definition */
+export type AnyAssociationDef =
+	// biome-ignore lint/suspicious/noExplicitAny: union must cover all branded variants
+	| HasManyDef<any>
+	// biome-ignore lint/suspicious/noExplicitAny: union must cover all branded variants
+	| HasOneDef<any>
+	// biome-ignore lint/suspicious/noExplicitAny: union must cover all branded variants
+	| BelongsToDef<any>
+	// biome-ignore lint/suspicious/noExplicitAny: union must cover all branded variants
+	| HasManyThroughDef<any>
+	// biome-ignore lint/suspicious/noExplicitAny: union must cover all branded variants
+	| PolymorphicBelongsToDef<any>;
+
+/** Extracts the instance property type from a branded association definition */
+type AssociationValue<Def> = Def extends { readonly __target: infer Value }
+	? Value
+	: never;
+
+/** Maps an association definitions object to the corresponding instance property types */
+export type AssociationProperties<
+	Associations extends Record<string, AnyAssociationDef>,
+> = {
+	[K in keyof Associations]: AssociationValue<Associations[K]>;
+};
+
+// --- Standalone association factory functions ---
+
+export function hasMany<Target extends AnyModelStatic>(
+	model: () => Target,
+	options?: { foreignKey?: string; as?: string },
+): HasManyDef<InstanceType<Target>> {
+	return {
+		associationType: "hasMany",
+		model: model as () => AnyModelStatic,
+		foreignKey: options?.foreignKey,
+		as: options?.as,
+	} as HasManyDef<InstanceType<Target>>;
+}
+
+export function hasOne<Target extends AnyModelStatic>(
+	model: () => Target,
+	options?: { foreignKey?: string; as?: string },
+): HasOneDef<InstanceType<Target>> {
+	return {
+		associationType: "hasOne",
+		model: model as () => AnyModelStatic,
+		foreignKey: options?.foreignKey,
+		as: options?.as,
+	} as HasOneDef<InstanceType<Target>>;
+}
+
+export function belongsTo<Target extends AnyModelStatic>(
+	model: () => Target,
+	options?: { foreignKey?: string },
+): BelongsToDef<InstanceType<Target>>;
+export function belongsTo<Target = unknown>(options: {
+	polymorphic: true;
+}): PolymorphicBelongsToDef<Target>;
+export function belongsTo(
+	modelOrOptions: (() => AnyModelStatic) | { polymorphic: true },
+	options?: { foreignKey?: string },
+): AnyAssociationDef {
+	if (typeof modelOrOptions === "function") {
+		return {
+			associationType: "belongsTo",
+			model: modelOrOptions,
+			foreignKey: options?.foreignKey,
+		} as BelongsToDef<unknown>;
+	}
+	return {
+		associationType: "belongsTo",
+		polymorphic: true,
+	} as PolymorphicBelongsToDef;
+}
+
+export function hasManyThrough<Target extends AnyModelStatic>(
+	model: () => Target,
+	options: { through: string; foreignKey?: string; source?: string },
+): HasManyThroughDef<InstanceType<Target>> {
+	return {
+		associationType: "hasManyThrough",
+		model: model as () => AnyModelStatic,
+		through: options.through,
+		foreignKey: options.foreignKey,
+		source: options.source,
+	} as HasManyThroughDef<InstanceType<Target>>;
+}
+
+// --- Instance and static model interfaces ---
+
+/** Instance methods available on all model records. Non-generic so TypeScript shows the name cleanly. */
+export interface BaseModel {
+	readonly isNewRecord: boolean;
+	markPersisted(): void;
+	save(): Promise<void>;
+	update(attributes: Record<string, unknown>): Promise<void>;
+	destroy(): Promise<void>;
+	reload(): Promise<void>;
+	load<K extends keyof this>(name: K & string): Promise<this[K]>;
+	toJSON(): Record<string, unknown>;
+}
+
+/**
+ * Static side of a Model class. Methods that return instances use a `this`
+ * parameter so `User.find(id)` returns `Promise<User>`, not `Promise<Row & BaseModel>`.
+ */
+export interface ModelStatic<Row> {
+	new (attributes?: Partial<Row>): Row & BaseModel;
+
+	tableDefinition: TableDefinition<Row>;
+	tableName: string;
+	primaryKeyField: string;
+
+	where<Self extends ModelStatic<Row>>(
+		this: Self,
+		conditions: Partial<Row>,
+	): QueryBuilder<InstanceType<Self>>;
+	whereRaw<Self extends ModelStatic<Row>>(
+		this: Self,
+		fragment: string,
+		values?: unknown[],
+	): QueryBuilder<InstanceType<Self>>;
+	order<Self extends ModelStatic<Row>>(
+		this: Self,
+		clause: Partial<Record<keyof Row & string, OrderDirection>>,
+	): QueryBuilder<InstanceType<Self>>;
+	limit<Self extends ModelStatic<Row>>(
+		this: Self,
+		count: number,
+	): QueryBuilder<InstanceType<Self>>;
+	all<Self extends ModelStatic<Row>>(
+		this: Self,
+	): QueryBuilder<InstanceType<Self>>;
+
+	find<Self extends ModelStatic<Row>>(
+		this: Self,
+		primaryKey: unknown,
+	): Promise<InstanceType<Self>>;
+	findBy<Self extends ModelStatic<Row>>(
+		this: Self,
+		conditions: Partial<Row>,
+	): Promise<InstanceType<Self> | null>;
+	first<Self extends ModelStatic<Row>>(
+		this: Self,
+	): Promise<InstanceType<Self> | null>;
+	last<Self extends ModelStatic<Row>>(
+		this: Self,
+	): Promise<InstanceType<Self> | null>;
+	count(): Promise<number>;
+	exists(conditions?: Partial<Row>): Promise<boolean>;
+
+	create<Self extends ModelStatic<Row>>(
+		this: Self,
+		attributes: Partial<Row>,
+	): Promise<InstanceType<Self>>;
+	createMany<Self extends ModelStatic<Row>>(
+		this: Self,
+		records: Partial<Row>[],
+	): Promise<InstanceType<Self>[]>;
+	upsert<Self extends ModelStatic<Row>>(
+		this: Self,
+		attributes: Partial<Row>,
+		options: UpsertOptions,
+	): Promise<InstanceType<Self>>;
+	upsertAll<Self extends ModelStatic<Row>>(
+		this: Self,
+		records: Partial<Row>[],
+		options: UpsertOptions,
+	): Promise<InstanceType<Self>[]>;
+
+	hasMany(
+		model: () => AnyModelStatic,
+		options?: { foreignKey?: string; as?: string },
+	): AssociationDefinition;
+	hasOne(
+		model: () => AnyModelStatic,
+		options?: { foreignKey?: string; as?: string },
+	): AssociationDefinition;
+	belongsTo(
+		modelOrOptions: (() => AnyModelStatic) | { polymorphic: true },
+		options?: { foreignKey?: string },
+	): AssociationDefinition;
+	hasManyThrough(
+		model: () => AnyModelStatic,
+		options: { through: string; foreignKey?: string; source?: string },
+	): AssociationDefinition;
+}

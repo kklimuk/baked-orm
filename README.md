@@ -99,6 +99,8 @@ bun db migrate down --count=3  # Rollback last 3 migrations
 
 All migrations run inside a transaction with an advisory lock to prevent concurrent execution. If any step fails, the entire migration is rolled back.
 
+**Conflict detection:** If two developers generate migrations with the same timestamp (same second), baked-orm detects the duplicate and throws an error before running. Rename one of the conflicting files to resolve.
+
 ### Check status
 
 ```bash
@@ -115,17 +117,173 @@ After each migration, baked-orm introspects your database and generates a typed 
 - **Table definitions** — column metadata, primary keys, indexes, and foreign keys
 - **Composite types** — Postgres composite types introspected from `pg_type` and generated as classes
 
-Row classes are extendable:
+## ORM
+
+baked-orm includes an ActiveRecord-inspired ORM. Define models by extending the generated Row classes:
+
+### Setup
 
 ```ts
-import { UsersRow } from "./db/schema";
+import { connect } from "baked-orm";
 
-class User extends UsersRow {
+await connect(); // reads baked.config.ts, establishes connection
+
+// Or with query logging:
+await connect({
+  onQuery: ({ text, values, durationMs }) => {
+    console.log(`[${durationMs.toFixed(1)}ms] ${text}`);
+  },
+});
+```
+
+### Define models
+
+Each model lives in its own file. Pass associations directly to `Model()` — TypeScript infers the types automatically:
+
+```ts
+// models/user.ts
+import { Model, hasMany } from "baked-orm";
+import { users } from "../db/schema";
+
+export class User extends Model(users, {
+  posts: hasMany(() => Post),
+  comments: hasMany(() => Comment, { as: "commentable" }),
+}) {
   get initials() {
-    return this.name.split(" ").map(n => n[0]).join("");
+    return this.name.split(" ").map(word => word[0]).join("");
   }
 }
 ```
+
+```ts
+// models/post.ts
+import { Model, belongsTo, hasMany, hasManyThrough } from "baked-orm";
+import { posts } from "../db/schema";
+
+export class Post extends Model(posts, {
+  author: belongsTo(() => User, { foreignKey: "userId" }),
+  comments: hasMany(() => Comment, { as: "commentable" }),
+  tags: hasManyThrough(() => Tag, { through: "taggings" }),
+}) {}
+```
+
+```ts
+// models/comment.ts — polymorphic
+import { Model, belongsTo } from "baked-orm";
+import { comments } from "../db/schema";
+
+export class Comment extends Model(comments, {
+  commentable: belongsTo<Post | User>({ polymorphic: true }),
+}) {}
+```
+
+Association types are fully inferred: `user.load("posts")` returns `Promise<Post[]>`, `post.load("author")` returns `Promise<User | null>` — no manual type declarations needed.
+
+### CRUD
+
+```ts
+// Create
+const user = await User.create({ name: "Alice", email: "alice@example.com" });
+
+// Mass create
+const users = await User.createMany([
+  { name: "Alice", email: "alice@example.com" },
+  { name: "Bob", email: "bob@example.com" },
+]);
+
+// Find
+const user = await User.find(id);           // throws RecordNotFoundError
+const user = await User.findBy({ email });   // null if missing
+
+// Update
+await user.update({ name: "Alice Smith" });
+
+// Save (INSERT if new, UPDATE if persisted)
+const user = new User({ name: "Alice" });
+await user.save();
+
+// Destroy
+await user.destroy();
+
+// Upsert
+await User.upsert(
+  { email: "alice@example.com", name: "Alice Updated" },
+  { conflictColumns: ["email"] },
+);
+```
+
+### Query builder
+
+Chainable, immutable, and thenable — `await User.where(...)` executes directly:
+
+```ts
+const results = await User.where({ name: "Alice" }).order({ createdAt: "DESC" }).limit(10);
+const count = await User.where({ active: true }).count();
+const exists = await User.exists({ email: "alice@example.com" });
+
+// Mass operations
+await User.where({ active: false }).updateAll({ deletedAt: now });
+await User.where({ active: false }).deleteAll();
+
+// Raw SQL fragments
+await User.whereRaw('"age" > $1', [18]).order({ name: "ASC" });
+```
+
+### Associations
+
+Load associations explicitly. Return types are inferred from the model definition:
+
+```ts
+const posts = await user.load("posts");           // Post[]
+const author = await post.load("author");         // User | null
+const target = await comment.load("commentable"); // Post | User | null
+const tags = await post.load("tags");             // Tag[]
+```
+
+Results are cached — calling `load()` again returns the same data without a query.
+
+### Eager loading (N+1 prevention)
+
+```ts
+const users = await User.where({ active: true }).includes("posts").toArray();
+// users[0].posts is already loaded — no extra query
+```
+
+### Transactions
+
+All queries inside a `transaction()` block automatically use the same connection:
+
+```ts
+import { transaction } from "baked-orm";
+
+await transaction(async () => {
+  const user = await User.create({ name: "Alice" });
+  await Post.create({ title: "Hello", userId: user.id });
+  // Auto-rollback on any error
+});
+```
+
+### Batch processing
+
+Process large tables without loading everything into memory:
+
+```ts
+// Iterate one record at a time, fetched in batches of 1000 (default)
+await User.where({ active: true }).findEach(async (user) => {
+  await sendEmail(user.email);
+}, { batchSize: 1000 });
+
+// Or work with batches directly
+await User.all().findInBatches(async (batch) => {
+  await bulkIndex(batch);
+}, { batchSize: 500 });
+```
+
+Both use cursor-based pagination (keyset pagination on the primary key) — safe for large tables and concurrent modifications.
+
+### camelCase convention
+
+All snake_case DB column names are automatically converted to camelCase in generated Row classes. You never write `user_id` — always `userId`. The actual DB column name is stored in `ColumnDefinition.columnName` for the query builder to translate back.
 
 ## Configuration
 

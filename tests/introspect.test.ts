@@ -4,6 +4,7 @@ import {
 	groupBy,
 	mapPgType,
 	parseIndexColumns,
+	toCamelCase,
 	toPascalCase,
 } from "../src/introspect";
 
@@ -107,6 +108,25 @@ describe("toPascalCase", () => {
 
 	test("handles already capitalized segments", () => {
 		expect(toPascalCase("User")).toBe("User");
+	});
+});
+
+describe("toCamelCase", () => {
+	test("converts single word", () => {
+		expect(toCamelCase("users")).toBe("users");
+	});
+
+	test("converts snake_case", () => {
+		expect(toCamelCase("user_id")).toBe("userId");
+	});
+
+	test("converts multi-segment snake_case", () => {
+		expect(toCamelCase("created_at")).toBe("createdAt");
+		expect(toCamelCase("org_team_member_id")).toBe("orgTeamMemberId");
+	});
+
+	test("handles already camelCase", () => {
+		expect(toCamelCase("id")).toBe("id");
 	});
 });
 
