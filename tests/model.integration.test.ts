@@ -178,7 +178,7 @@ const taggingsTableDef: TableDefinition<TaggingsRow> = {
 // --- Model classes ---
 
 // Same-file circular models use static properties + declare.
-// In real apps with separate files, use Model(table, { associations }) instead — no declare needed.
+// In separate files, use string-based refs: hasMany<Post>("Post") with import type — no declare needed.
 class User extends Model(usersTableDef) {
 	static posts = User.hasMany(() => Post);
 	static comments = User.hasMany(() => Comment, { as: "commentable" });
@@ -809,16 +809,16 @@ describe("Nested eager loading", () => {
 	});
 });
 
-describe("Model(table, associations) API — no declare needed", () => {
-	// When models don't have circular references (or live in separate files),
-	// pass associations to Model() directly — TypeScript infers the types.
+describe("String-based association refs — no declare needed", () => {
+	// String-based model refs resolve from the registry at runtime.
+	// Combined with import type, this avoids circular imports entirely.
 	class Article extends Model(postsTableDef) {}
 
 	class Author extends Model(usersTableDef, {
-		articles: hasMany(() => Article),
+		articles: hasMany<Article>("Article"),
 	}) {}
 
-	test("load() returns correctly typed associations without declare", async () => {
+	test("load() returns correctly typed associations", async () => {
 		const author = await Author.create({
 			name: "Alice",
 			email: "alice@test.com",

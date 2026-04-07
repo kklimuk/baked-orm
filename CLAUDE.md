@@ -60,10 +60,11 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/model/errors.ts` — `ValidationError` (thrown by `save()` on failure) and `ValidationErrors` (Rails-like Map-backed error collection with `add`, `get`, `fullMessages`, `fullMessagesFor`, `toJSON`)
 - `src/model/connection.ts` — connection singleton wrapping existing config system. `AsyncLocalStorage` scopes transactions. Supports `onQuery` callback for query logging
 - `src/model/utils.ts` — shared utilities: `quoteIdentifier`, `resolveColumnName`, `buildReverseColumnMap`, `mapRowToModel`, `hydrateInstance`, `executeQuery` (with logging + sensitive column redaction), `buildConflictClause`, `buildSensitiveColumns`
-- `src/model/types.ts` — `ModelStatic<Row>`, `BaseModel`, `AnyModelStatic`, `AssociationDefinition`, `RecordNotFoundError`. Also exports branded association types (`HasManyDef`, `HasOneDef`, `BelongsToDef`, `HasManyThroughDef`) and standalone factory functions (`hasMany`, `hasOne`, `belongsTo`, `hasManyThrough`) for the `Model(table, associations)` API
+- `src/model/types.ts` — `ModelStatic<Row>`, `BaseModel`, `AnyModelStatic`, `AssociationDefinition`, `RecordNotFoundError`. Also exports branded association types (`HasManyDef`, `HasOneDef`, `BelongsToDef`, `HasManyThroughDef`) and standalone factory functions (`hasMany`, `hasOne`, `belongsTo`, `hasManyThrough`) for the `Model(table, associations)` API. Factory functions accept either string model names (resolved from registry) or thunks (`() => Model`); string overloads take an explicit generic for type inference: `hasMany<Post>("Post")`
 
 ### Association declaration patterns
-- **Preferred (separate files):** `Model(table, { posts: hasMany(() => Post) })` — associations passed to `Model()`, types inferred via branded defs + `AssociationProperties` mapped type. No `declare` needed
+- **Preferred (separate files):** `Model(table, { posts: hasMany<Post>("Post") })` with `import type { Post }` — string-based model refs resolve from the registry at runtime, `import type` avoids circular imports, branded defs + `AssociationProperties` mapped type infer instance types automatically
+- **Same-file (no circular imports):** `Model(table, { posts: hasMany(() => Post) })` — thunk-based refs work when both models are in the same file or there are no circular dependencies. TypeScript infers the target type from the thunk
 - **Same-file circular refs:** `static posts = User.hasMany(() => Post)` + `declare posts: Post[]` — TypeScript can't resolve circular base expressions in the same file, so one side of a bidirectional relationship needs the static property + declare pattern
 
 ### Enum support
@@ -90,7 +91,7 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - The trigger function is NOT dropped in migration `down` since other tables may reference it
 
 ### Validation and callback patterns
-- **Associations** stay in `Model()` for type inference: `Model(table, { posts: hasMany(() => Post) })`
+- **Associations** stay in `Model()` for type inference: `Model(table, { posts: hasMany<Post>("Post") })`
 - **Validations** are declared as static properties: `static validations = { name: validates("presence") }`
 - **Callbacks** are declared as static arrays: `static beforeSave = [(record) => { ... }]`
 - Built-in validators: `presence`, `length`, `numericality`, `format`, `inclusion`, `exclusion`, `email`

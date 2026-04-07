@@ -25,6 +25,7 @@ export type AssociationType =
 export type AssociationDefinition = {
 	readonly associationType: AssociationType;
 	readonly model?: () => AnyModelStatic;
+	readonly modelName?: string;
 	readonly foreignKey?: string;
 	readonly primaryKey?: string;
 	readonly polymorphic?: boolean;
@@ -103,30 +104,54 @@ export type AssociationProperties<
 
 // --- Standalone association factory functions ---
 
+export function hasMany<Target>(
+	model: string,
+	options?: { foreignKey?: string; as?: string },
+): HasManyDef<Target>;
 export function hasMany<Target extends AnyModelStatic>(
 	model: () => Target,
 	options?: { foreignKey?: string; as?: string },
-): HasManyDef<InstanceType<Target>> {
+): HasManyDef<InstanceType<Target>>;
+export function hasMany(
+	model: string | (() => AnyModelStatic),
+	options?: { foreignKey?: string; as?: string },
+): AssociationDefinition {
 	return {
 		associationType: "hasMany",
-		model: model as () => AnyModelStatic,
+		...(typeof model === "string"
+			? { modelName: model }
+			: { model: model as () => AnyModelStatic }),
 		foreignKey: options?.foreignKey,
 		as: options?.as,
-	} as HasManyDef<InstanceType<Target>>;
+	} as AssociationDefinition;
 }
 
+export function hasOne<Target>(
+	model: string,
+	options?: { foreignKey?: string; as?: string },
+): HasOneDef<Target>;
 export function hasOne<Target extends AnyModelStatic>(
 	model: () => Target,
 	options?: { foreignKey?: string; as?: string },
-): HasOneDef<InstanceType<Target>> {
+): HasOneDef<InstanceType<Target>>;
+export function hasOne(
+	model: string | (() => AnyModelStatic),
+	options?: { foreignKey?: string; as?: string },
+): AssociationDefinition {
 	return {
 		associationType: "hasOne",
-		model: model as () => AnyModelStatic,
+		...(typeof model === "string"
+			? { modelName: model }
+			: { model: model as () => AnyModelStatic }),
 		foreignKey: options?.foreignKey,
 		as: options?.as,
-	} as HasOneDef<InstanceType<Target>>;
+	} as AssociationDefinition;
 }
 
+export function belongsTo<Target>(
+	model: string,
+	options?: { foreignKey?: string },
+): BelongsToDef<Target>;
 export function belongsTo<Target extends AnyModelStatic>(
 	model: () => Target,
 	options?: { foreignKey?: string },
@@ -135,9 +160,16 @@ export function belongsTo<Target = unknown>(options: {
 	polymorphic: true;
 }): PolymorphicBelongsToDef<Target>;
 export function belongsTo(
-	modelOrOptions: (() => AnyModelStatic) | { polymorphic: true },
+	modelOrOptions: string | (() => AnyModelStatic) | { polymorphic: true },
 	options?: { foreignKey?: string },
 ): AnyAssociationDef {
+	if (typeof modelOrOptions === "string") {
+		return {
+			associationType: "belongsTo",
+			modelName: modelOrOptions,
+			foreignKey: options?.foreignKey,
+		} as BelongsToDef<unknown>;
+	}
 	if (typeof modelOrOptions === "function") {
 		return {
 			associationType: "belongsTo",
@@ -151,17 +183,27 @@ export function belongsTo(
 	} as PolymorphicBelongsToDef;
 }
 
+export function hasManyThrough<Target>(
+	model: string,
+	options: { through: string; foreignKey?: string; source?: string },
+): HasManyThroughDef<Target>;
 export function hasManyThrough<Target extends AnyModelStatic>(
 	model: () => Target,
 	options: { through: string; foreignKey?: string; source?: string },
-): HasManyThroughDef<InstanceType<Target>> {
+): HasManyThroughDef<InstanceType<Target>>;
+export function hasManyThrough(
+	model: string | (() => AnyModelStatic),
+	options: { through: string; foreignKey?: string; source?: string },
+): AssociationDefinition {
 	return {
 		associationType: "hasManyThrough",
-		model: model as () => AnyModelStatic,
+		...(typeof model === "string"
+			? { modelName: model }
+			: { model: model as () => AnyModelStatic }),
 		through: options.through,
 		foreignKey: options.foreignKey,
 		source: options.source,
-	} as HasManyThroughDef<InstanceType<Target>>;
+	} as AssociationDefinition;
 }
 
 // --- Instance and static model interfaces ---

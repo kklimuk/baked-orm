@@ -35,10 +35,20 @@ function inferForeignKey(tableName: string): string {
 }
 
 function resolveModel(definition: AssociationDefinition): AnyModelStatic {
-	if (!definition.model) {
-		throw new Error("Association definition is missing a model reference");
+	if (definition.model) {
+		return definition.model();
 	}
-	return definition.model();
+	if (definition.modelName) {
+		const registry = getModelRegistry();
+		const model = registry.get(definition.modelName);
+		if (!model) {
+			throw new Error(
+				`Model "${definition.modelName}" not found in registry. Make sure the model class is defined and imported.`,
+			);
+		}
+		return model;
+	}
+	throw new Error("Association definition is missing a model reference");
 }
 
 export async function loadAssociation(

@@ -168,16 +168,18 @@ await connect({
 
 ### Define models
 
-Each model lives in its own file. Pass associations directly to `Model()` — TypeScript infers the types automatically:
+Each model lives in its own file. Use string-based model references with `import type` to avoid circular imports — TypeScript infers the association types automatically:
 
 ```ts
 // models/user.ts
 import { Model, hasMany } from "baked-orm";
 import { users } from "../db/schema";
+import type { Post } from "./post";
+import type { Comment } from "./comment";
 
 export class User extends Model(users, {
-  posts: hasMany(() => Post),
-  comments: hasMany(() => Comment, { as: "commentable" }),
+  posts: hasMany<Post>("Post"),
+  comments: hasMany<Comment>("Comment", { as: "commentable" }),
 }) {
   get initials() {
     return this.name.split(" ").map(word => word[0]).join("");
@@ -189,11 +191,14 @@ export class User extends Model(users, {
 // models/post.ts
 import { Model, belongsTo, hasMany, hasManyThrough } from "baked-orm";
 import { posts } from "../db/schema";
+import type { User } from "./user";
+import type { Comment } from "./comment";
+import type { Tag } from "./tag";
 
 export class Post extends Model(posts, {
-  author: belongsTo(() => User, { foreignKey: "userId" }),
-  comments: hasMany(() => Comment, { as: "commentable" }),
-  tags: hasManyThrough(() => Tag, { through: "taggings" }),
+  author: belongsTo<User>("User", { foreignKey: "userId" }),
+  comments: hasMany<Comment>("Comment", { as: "commentable" }),
+  tags: hasManyThrough<Tag>("Tag", { through: "taggings" }),
 }) {}
 ```
 
@@ -201,13 +206,15 @@ export class Post extends Model(posts, {
 // models/comment.ts — polymorphic
 import { Model, belongsTo } from "baked-orm";
 import { comments } from "../db/schema";
+import type { Post } from "./post";
+import type { User } from "./user";
 
 export class Comment extends Model(comments, {
   commentable: belongsTo<Post | User>({ polymorphic: true }),
 }) {}
 ```
 
-Association types are fully inferred: `user.load("posts")` returns `Promise<Post[]>`, `post.load("author")` returns `Promise<User | null>` — no manual type declarations needed.
+Association types are fully inferred: `user.load("posts")` returns `Promise<Post[]>`, `post.load("author")` returns `Promise<User | null>` — no manual type declarations needed. String-based refs (`"Post"` instead of `() => Post`) resolve from the model registry at runtime, and `import type` ensures no circular import issues.
 
 ### CRUD
 
@@ -398,7 +405,7 @@ Declare field-level validations as static properties — Rails-style, with struc
 import { Model, validates, validate } from "baked-orm";
 
 class User extends Model(users, {
-  posts: hasMany(() => Post),
+  posts: hasMany<Post>("Post"),
 }) {
   static validations = {
     name: validates("presence"),
@@ -611,8 +618,9 @@ Sensitive fields are excluded from serialization and redacted in query logs — 
 // models/user.ts (server)
 import { Model, hasMany } from "baked-orm";
 import { users } from "../db/schema";
+import type { Post } from "./post";
 
-export class User extends Model(users, { posts: hasMany(() => Post) }) {
+export class User extends Model(users, { posts: hasMany<Post>("Post") }) {
   static sensitiveFields = ["passwordDigest"];
 }
 ```
