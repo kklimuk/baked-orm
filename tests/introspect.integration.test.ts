@@ -166,6 +166,80 @@ describe("generateSchema", () => {
 		expect(content).toContain("tables: {  }");
 	});
 
+	test("handles enum types", async () => {
+		await connection`CREATE TYPE status AS ENUM ('active', 'inactive', 'archived')`;
+		await connection`
+			CREATE TABLE users (
+				id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+				name text NOT NULL,
+				status status NOT NULL DEFAULT 'active'
+			)
+		`;
+
+		const config = makeConfig();
+		await mkdir(tempDir, { recursive: true });
+		await generateSchema(connection, config, "20240101000000");
+
+		const content = await Bun.file(config.schemaPath).text();
+
+		// Enum type definition
+		expect(content).toContain(
+			'export type Status = "active" | "inactive" | "archived";',
+		);
+		expect(content).toContain(
+			'export const StatusValues = ["active", "inactive", "archived"] as const;',
+		);
+
+		// Row class uses enum type
+		expect(content).toContain("declare status: Status");
+
+		// Column definition includes enumValues
+		expect(content).toContain("enumValues: StatusValues");
+	});
+
+	test("handles multiple enum types", async () => {
+		await connection`CREATE TYPE status AS ENUM ('active', 'inactive')`;
+		await connection`CREATE TYPE user_role AS ENUM ('admin', 'user', 'moderator')`;
+		await connection`
+			CREATE TABLE users (
+				id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+				status status NOT NULL,
+				role user_role NOT NULL
+			)
+		`;
+
+		const config = makeConfig();
+		await mkdir(tempDir, { recursive: true });
+		await generateSchema(connection, config, "20240101000000");
+
+		const content = await Bun.file(config.schemaPath).text();
+
+		expect(content).toContain('export type Status = "active" | "inactive";');
+		expect(content).toContain(
+			'export type UserRole = "admin" | "user" | "moderator";',
+		);
+		expect(content).toContain("declare status: Status");
+		expect(content).toContain("declare role: UserRole");
+	});
+
+	test("handles nullable enum columns", async () => {
+		await connection`CREATE TYPE status AS ENUM ('active', 'inactive')`;
+		await connection`
+			CREATE TABLE users (
+				id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+				status status
+			)
+		`;
+
+		const config = makeConfig();
+		await mkdir(tempDir, { recursive: true });
+		await generateSchema(connection, config, "20240101000000");
+
+		const content = await Bun.file(config.schemaPath).text();
+
+		expect(content).toContain("declare status: Status | null");
+	});
+
 	test("handles composite types", async () => {
 		await connection`CREATE TYPE address AS (street text, city text, zip text)`;
 		await connection`
@@ -185,5 +259,40 @@ describe("generateSchema", () => {
 		expect(content).toContain("declare street: string");
 		expect(content).toContain("declare city: string");
 		expect(content).toContain("declare zip: string");
+
+		// Row class uses composite type
+		expect(content).toContain("declare homeAddress: AddressComposite | null");
+	});
+
+	test("handles enum and composite types in the same schema", async () => {
+		await connection`CREATE TYPE status AS ENUM ('active', 'inactive')`;
+		await connection`CREATE TYPE address AS (street text, city text)`;
+		await connection`
+			CREATE TABLE users (
+				id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+				status status NOT NULL,
+				home_address address
+			)
+		`;
+
+		const config = makeConfig();
+		await mkdir(tempDir, { recursive: true });
+		await generateSchema(connection, config, "20240101000000");
+
+		const content = await Bun.file(config.schemaPath).text();
+
+		// Enum section
+		expect(content).toContain('export type Status = "active" | "inactive"');
+		expect(content).toContain("export const StatusValues =");
+
+		// Composite section
+		expect(content).toContain("class AddressComposite");
+
+		// Row class uses both
+		expect(content).toContain("declare status: Status");
+		expect(content).toContain("declare homeAddress: AddressComposite | null");
+
+		// Enum column has enumValues, composite column does not
+		expect(content).toContain("enumValues: StatusValues");
 	});
 });

@@ -3,6 +3,7 @@ export type ColumnDefinition = {
 	nullable: boolean;
 	default?: string;
 	columnName: string;
+	enumValues?: readonly string[];
 };
 
 export type IndexDefinition = {

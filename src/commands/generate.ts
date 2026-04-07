@@ -4,14 +4,17 @@ import { relative, resolve } from "path";
 
 import type { ResolvedConfig } from "../types";
 
-const PREFIXES = {
+const ENUM_PREFIX = /^create_enum_/;
+
+const TABLE_PREFIXES = {
 	create: /^create_/,
 	alter: /^(update_|alter_)/,
 	drop: /^(delete_|drop_)/,
 };
 
 export function extractTableName(migrationName: string): string | null {
-	for (const pattern of Object.values(PREFIXES)) {
+	if (ENUM_PREFIX.test(migrationName)) return null;
+	for (const pattern of Object.values(TABLE_PREFIXES)) {
 		if (pattern.test(migrationName)) {
 			return migrationName.replace(pattern, "");
 		}
@@ -19,10 +22,32 @@ export function extractTableName(migrationName: string): string | null {
 	return null;
 }
 
+export function extractEnumName(migrationName: string): string | null {
+	if (ENUM_PREFIX.test(migrationName)) {
+		return migrationName.replace(ENUM_PREFIX, "");
+	}
+	return null;
+}
+
 export function buildTemplate(migrationName: string): string {
+	const enumName = extractEnumName(migrationName);
+
+	if (enumName) {
+		return `import type { TransactionSQL } from "bun";
+
+export async function up(txn: TransactionSQL) {
+\tawait txn\`CREATE TYPE ${enumName} AS ENUM ('value1', 'value2')\`;
+}
+
+export async function down(txn: TransactionSQL) {
+\tawait txn\`DROP TYPE ${enumName}\`;
+}
+`;
+	}
+
 	const tableName = extractTableName(migrationName);
 
-	if (tableName && PREFIXES.create.test(migrationName)) {
+	if (tableName && TABLE_PREFIXES.create.test(migrationName)) {
 		return `import type { TransactionSQL } from "bun";
 
 export async function up(txn: TransactionSQL) {
@@ -41,7 +66,7 @@ export async function down(txn: TransactionSQL) {
 `;
 	}
 
-	if (tableName && PREFIXES.alter.test(migrationName)) {
+	if (tableName && TABLE_PREFIXES.alter.test(migrationName)) {
 		return `import type { TransactionSQL } from "bun";
 
 export async function up(txn: TransactionSQL) {
@@ -54,7 +79,7 @@ export async function down(txn: TransactionSQL) {
 `;
 	}
 
-	if (tableName && PREFIXES.drop.test(migrationName)) {
+	if (tableName && TABLE_PREFIXES.drop.test(migrationName)) {
 		return `import type { TransactionSQL } from "bun";
 
 export async function up(txn: TransactionSQL) {

@@ -3,6 +3,7 @@ import { Temporal } from "@js-temporal/polyfill";
 
 import {
 	buildTemplate,
+	extractEnumName,
 	extractTableName,
 	formatTimestamp,
 } from "../src/commands/generate";
@@ -30,6 +31,11 @@ describe("extractTableName", () => {
 
 	test("returns null for unrecognized prefix", () => {
 		expect(extractTableName("add_indexes")).toBeNull();
+	});
+
+	test("returns null for enum migration names", () => {
+		expect(extractTableName("create_enum_status")).toBeNull();
+		expect(extractTableName("create_enum_user_role")).toBeNull();
 	});
 
 	test("handles compound table names", () => {
@@ -86,18 +92,44 @@ describe("buildTemplate", () => {
 		expect(template).not.toContain("DROP TABLE");
 	});
 
+	test("generates CREATE TYPE template for create_enum_ prefix", () => {
+		const template = buildTemplate("create_enum_status");
+		expect(template).toContain("CREATE TYPE status AS ENUM");
+		expect(template).toContain("DROP TYPE status");
+		expect(template).toContain("'value1', 'value2'");
+		expect(template).toContain("export async function up");
+		expect(template).toContain("export async function down");
+	});
+
 	test("all templates import TransactionSQL", () => {
 		const names = [
 			"create_users",
 			"update_users",
 			"delete_users",
 			"add_indexes",
+			"create_enum_status",
 		];
 		for (const name of names) {
 			expect(buildTemplate(name)).toContain(
 				'import type { TransactionSQL } from "bun"',
 			);
 		}
+	});
+});
+
+describe("extractEnumName", () => {
+	test("extracts enum name from create_enum_ prefix", () => {
+		expect(extractEnumName("create_enum_status")).toBe("status");
+	});
+
+	test("extracts compound enum name", () => {
+		expect(extractEnumName("create_enum_user_role")).toBe("user_role");
+	});
+
+	test("returns null for non-enum prefixes", () => {
+		expect(extractEnumName("create_users")).toBeNull();
+		expect(extractEnumName("update_users")).toBeNull();
+		expect(extractEnumName("add_indexes")).toBeNull();
 	});
 });
 

@@ -61,6 +61,7 @@ The generator recognizes naming conventions and scaffolds contextual templates:
 
 | Command | Generates |
 |---|---|
+| `bun bake db generate create_enum_status` | `CREATE TYPE status AS ENUM (...)` + `DROP TYPE` |
 | `bun bake db generate create_users` | `CREATE TABLE users` with id, timestamps + `DROP TABLE` |
 | `bun bake db generate update_users` | `ALTER TABLE users ADD COLUMN` + `DROP COLUMN` |
 | `bun bake db generate alter_users` | Same as `update_` |
@@ -140,8 +141,9 @@ Output directories default to `modelsPath` and `frontendModelsPath` from `baked.
 
 After each migration, baked-orm introspects your database and generates a typed schema file at `db/schema.ts`. This file contains:
 
+- **Enum types** — PostgreSQL enum types introspected from `pg_enum`, generated as TypeScript string union types with runtime const arrays for validation
 - **Row classes** — typed classes with `declare`'d properties matching your table columns, extendable in your own code
-- **Table definitions** — column metadata, primary keys, indexes, and foreign keys
+- **Table definitions** — column metadata, primary keys, indexes, foreign keys, and enum values
 - **Composite types** — Postgres composite types introspected from `pg_type` and generated as classes
 
 ## ORM
@@ -421,6 +423,38 @@ if (!await user.isValid()) {
 ```
 
 **Note:** Bulk operations (`createMany`, `upsertAll`, `updateAll`, `deleteAll`) skip validations and callbacks for performance.
+
+### Enum support
+
+PostgreSQL enum types are first-class citizens. After running migrations, the generated schema includes typed enums:
+
+```ts
+// Generated in db/schema.ts
+export type Status = "active" | "inactive" | "archived";
+export const StatusValues = ["active", "inactive", "archived"] as const;
+
+export class UsersRow {
+  declare id: string;
+  declare status: Status;
+}
+
+// Column definition includes enumValues for runtime validation
+// status: { type: "USER-DEFINED", nullable: false, columnName: "status", enumValues: StatusValues },
+```
+
+Enum columns are **auto-validated** — no need to manually declare `validates("inclusion")`. Invalid values produce clear error messages:
+
+```ts
+const user = new User({ status: "deleted" });
+await user.isValid(); // false
+user.errors.get("status"); // ["is not a valid value (must be one of: active, inactive, archived)"]
+```
+
+Generate an enum migration:
+
+```bash
+bun bake db generate create_enum_status
+```
 
 ### Callbacks
 

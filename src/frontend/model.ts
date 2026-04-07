@@ -95,6 +95,7 @@ export function FrontendModel<Row>(
 				this,
 				context,
 				modelClass,
+				columns,
 			);
 			return this.#validationErrors.isEmpty;
 		}

@@ -83,6 +83,17 @@ describe("mapPgType", () => {
 		);
 	});
 
+	test("maps enum types when provided", () => {
+		const enumNames = new Set(["status", "user_role"]);
+		expect(mapPgType("status", undefined, enumNames)).toBe("Status");
+		expect(mapPgType("user_role", undefined, enumNames)).toBe("UserRole");
+	});
+
+	test("maps enum array types", () => {
+		const enumNames = new Set(["status"]);
+		expect(mapPgType("status[]", undefined, enumNames)).toBe("Status[]");
+	});
+
 	test("falls back to unknown for unrecognized types", () => {
 		expect(mapPgType("some_custom_type")).toBe("unknown");
 	});

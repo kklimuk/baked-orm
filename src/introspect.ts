@@ -68,6 +68,16 @@ type IntrospectedIndex = {
 	indexdef: string;
 };
 
+type IntrospectedEnumValue = {
+	enum_name: string;
+	enum_value: string;
+};
+
+type EnumType = {
+	name: string;
+	values: string[];
+};
+
 type CompositeField = {
 	type_name: string;
 	attribute_name: string;
@@ -78,6 +88,32 @@ type CompositeType = {
 	name: string;
 	fields: { name: string; tsType: string }[];
 };
+
+async function introspectEnumTypes(connection: SQL): Promise<EnumType[]> {
+	const rows: IntrospectedEnumValue[] = await connection`
+		SELECT
+			t.typname AS enum_name,
+			e.enumlabel AS enum_value
+		FROM pg_catalog.pg_type t
+		JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid
+		JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+		WHERE t.typtype = 'e'
+			AND n.nspname = 'public'
+		ORDER BY t.typname, e.enumsortorder
+	`;
+
+	const enumMap = new Map<string, EnumType>();
+	for (const row of rows) {
+		let enumType = enumMap.get(row.enum_name);
+		if (!enumType) {
+			enumType = { name: row.enum_name, values: [] };
+			enumMap.set(row.enum_name, enumType);
+		}
+		enumType.values.push(row.enum_value);
+	}
+
+	return [...enumMap.values()];
+}
 
 async function introspectCompositeTypes(
 	connection: SQL,
@@ -116,10 +152,11 @@ async function introspectCompositeTypes(
 export function mapPgType(
 	pgType: string,
 	compositeNames?: Set<string>,
+	enumNames?: Set<string>,
 ): string {
 	if (pgType.endsWith("[]")) {
 		const baseType = pgType.slice(0, -2);
-		return `${mapPgType(baseType, compositeNames)}[]`;
+		return `${mapPgType(baseType, compositeNames, enumNames)}[]`;
 	}
 
 	if (pgType.startsWith("ARRAY")) {
@@ -128,6 +165,10 @@ export function mapPgType(
 
 	if (compositeNames?.has(pgType)) {
 		return `${toPascalCase(pgType)}Composite`;
+	}
+
+	if (enumNames?.has(pgType)) {
+		return toPascalCase(pgType);
 	}
 
 	if (PG_TYPE_MAP[pgType]) {
@@ -260,13 +301,19 @@ export async function generateSchema(
 	config: ResolvedConfig,
 	version: string | undefined,
 ) {
-	const [tables, compositeTypes] = await Promise.all([
+	const [tables, compositeTypes, enumTypes] = await Promise.all([
 		introspectTables(connection),
 		introspectCompositeTypes(connection),
+		introspectEnumTypes(connection),
 	]);
 
 	const compositeNames = new Set(
 		compositeTypes.map((composite) => composite.name),
+	);
+
+	const enumNames = new Set(enumTypes.map((enumType) => enumType.name));
+	const enumValuesByName = new Map(
+		enumTypes.map((enumType) => [enumType.name, enumType.values]),
 	);
 
 	const [columns, { pks, fks }, indexes] = await Promise.all([
@@ -291,6 +338,23 @@ export async function generateSchema(
 		`import type { TableDefinition, SchemaDefinition } from "baked-orm";`,
 		"",
 	);
+
+	if (enumTypes.length > 0) {
+		lines.push("// --- Enum Types ---", "");
+		for (const enumType of enumTypes) {
+			const typeName = toPascalCase(enumType.name);
+			const valuesName = `${typeName}Values`;
+			const unionType = enumType.values
+				.map((value) => JSON.stringify(value))
+				.join(" | ");
+			const valuesArray = enumType.values
+				.map((value) => JSON.stringify(value))
+				.join(", ");
+			lines.push(`export type ${typeName} = ${unionType};`);
+			lines.push(`export const ${valuesName} = [${valuesArray}] as const;`);
+			lines.push("");
+		}
+	}
 
 	if (compositeTypes.length > 0) {
 		lines.push("// --- Composite Types ---", "");
@@ -321,7 +385,9 @@ export async function generateSchema(
 		lines.push(`// --- Table: ${tableName} ---`, "");
 		lines.push(`export class ${rowClassName} {`);
 		for (const col of tableCols) {
-			const tsType = mapPgType(col.data_type, compositeNames);
+			const resolvedType =
+				col.data_type === "USER-DEFINED" ? col.udt_name : col.data_type;
+			const tsType = mapPgType(resolvedType, compositeNames, enumNames);
 			const nullable = col.is_nullable === "YES" ? " | null" : "";
 			const camelName = toCamelCase(col.column_name);
 			lines.push(`\tdeclare ${camelName}: ${tsType}${nullable};`);
@@ -343,8 +409,15 @@ export async function generateSchema(
 				? `, default: ${JSON.stringify(col.column_default)}`
 				: "";
 			const camelName = toCamelCase(col.column_name);
+			const enumValuesForColumn =
+				col.data_type === "USER-DEFINED"
+					? enumValuesByName.get(col.udt_name)
+					: undefined;
+			const enumStr = enumValuesForColumn
+				? `, enumValues: ${toPascalCase(col.udt_name)}Values`
+				: "";
 			lines.push(
-				`\t\t${camelName}: { type: ${JSON.stringify(colType)}, nullable: ${nullable}${defaultStr}, columnName: ${JSON.stringify(col.column_name)} },`,
+				`\t\t${camelName}: { type: ${JSON.stringify(colType)}, nullable: ${nullable}${defaultStr}, columnName: ${JSON.stringify(col.column_name)}${enumStr} },`,
 			);
 		}
 		lines.push("\t},");

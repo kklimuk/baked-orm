@@ -1,3 +1,4 @@
+import type { ColumnDefinition } from "../types";
 import { ValidationErrors } from "./errors";
 
 // --- Types ---
@@ -350,6 +351,7 @@ export function collectValidationErrors(
 	instance: Record<string, unknown>,
 	context: ValidationContext,
 	modelClass: Record<string, unknown>,
+	columns?: Record<string, ColumnDefinition>,
 ): ValidationErrors {
 	const errors = new ValidationErrors();
 
@@ -357,6 +359,23 @@ export function collectValidationErrors(
 	const validations = modelClass.validations as
 		| Record<string, ValidationRule | ValidationRule[]>
 		| undefined;
+
+	// Auto-validate enum columns from column definitions,
+	// skipping fields that have explicit user-defined validations
+	if (columns) {
+		for (const [field, column] of Object.entries(columns)) {
+			if (!column.enumValues) continue;
+			if (validations?.[field]) continue;
+			const value = instance[field];
+			if (value === null || value === undefined) continue;
+			if (!column.enumValues.includes(value as string)) {
+				errors.add(
+					field,
+					`is not a valid value (must be one of: ${column.enumValues.join(", ")})`,
+				);
+			}
+		}
+	}
 
 	if (validations) {
 		for (const [field, rules] of Object.entries(validations)) {

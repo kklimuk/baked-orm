@@ -30,6 +30,7 @@ Database migration tool and ORM for Bun. PostgreSQL only via `Bun.sql`.
 ## Conventions
 
 Migration name prefixes scaffold contextual templates:
+- `create_enum_<name>` — CREATE TYPE AS ENUM + DROP TYPE
 - `create_<table>` — CREATE TABLE with id, created_at, updated_at + DROP TABLE
 - `update_<table>` or `alter_<table>` — ALTER TABLE ADD COLUMN + DROP COLUMN
 - `delete_<table>` or `drop_<table>` — DROP TABLE + CREATE TABLE stub
@@ -46,14 +47,14 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 ### Migration system
 - `src/config.ts` — loads `baked.config.ts`, provides `getConnection()` for DB access
 - `src/runner.ts` — migration discovery, advisory locking, transactional up/down execution, duplicate timestamp detection
-- `src/introspect.ts` — queries `information_schema` + `pg_type` to generate typed `db/schema.ts` with camelCase properties and `columnName` mapping
+- `src/introspect.ts` — queries `information_schema` + `pg_type` to generate typed `db/schema.ts` with camelCase properties and `columnName` mapping. Introspects PostgreSQL enum types (`pg_enum`) and emits TypeScript string union types + `Values` const arrays in the schema. Enum columns use `udt_name` for type resolution when `data_type` is `USER-DEFINED`
 - `src/commands/` — one file per CLI command (init, create, drop, generate, migrate, status)
 
 ### ORM layer
 - `src/model/base.ts` — `Model()` mixin function. Returns a class extending the generated Row class with CRUD, query, association, validation, callback, and dirty tracking methods. Uses `this` in static methods for polymorphic subclass support. `save()` runs validation + callback lifecycle; `#performUpdate()` only sends dirty columns. `assignAttributes()` sets multiple fields without saving (used by `update()` internally)
 - `src/model/query.ts` — immutable, chainable `QueryBuilder`. Uses parameterized queries via `executeQuery()` for SQL injection safety. Thenable via `then()`. Includes `findEach`/`findInBatches` for cursor-based batch processing
 - `src/model/associations.ts` — `loadAssociation()` and `preloadAssociations()` for belongsTo, hasOne, hasMany, hasManyThrough, and polymorphic associations. Supports nested eager loading via dotted paths (`includes("posts.comments")`). Model registry maps class names to constructors for polymorphic resolution
-- `src/model/validations.ts` — `validates()` factory for field-level rules (presence, length, numericality, format, inclusion, exclusion, email), `validate()` for record-level custom validators, `defineValidator()` registry for user-defined validators, `collectValidationErrors()` runner
+- `src/model/validations.ts` — `validates()` factory for field-level rules (presence, length, numericality, format, inclusion, exclusion, email), `validate()` for record-level custom validators, `defineValidator()` registry for user-defined validators, `collectValidationErrors()` runner. Enum columns with `enumValues` in their `ColumnDefinition` are auto-validated without explicit `validates("inclusion")` — invalid values produce `"is not a valid value (must be one of: ...)"` errors
 - `src/model/callbacks.ts` — `runCallbacks()` discovers and executes lifecycle callback arrays from static properties on the model class
 - `src/model/errors.ts` — `ValidationError` (thrown by `save()` on failure) and `ValidationErrors` (Rails-like Map-backed error collection with `add`, `get`, `fullMessages`, `fullMessagesFor`, `toJSON`)
 - `src/model/connection.ts` — connection singleton wrapping existing config system. `AsyncLocalStorage` scopes transactions. Supports `onQuery` callback for query logging
@@ -63,6 +64,13 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 ### Association declaration patterns
 - **Preferred (separate files):** `Model(table, { posts: hasMany(() => Post) })` — associations passed to `Model()`, types inferred via branded defs + `AssociationProperties` mapped type. No `declare` needed
 - **Same-file circular refs:** `static posts = User.hasMany(() => Post)` + `declare posts: Post[]` — TypeScript can't resolve circular base expressions in the same file, so one side of a bidirectional relationship needs the static property + declare pattern
+
+### Enum support
+- PostgreSQL `CREATE TYPE ... AS ENUM` types are introspected from `pg_enum` and emitted in `db/schema.ts` as TypeScript string union types (`type Status = "active" | "inactive"`) plus runtime const arrays (`const StatusValues = ["active", "inactive"] as const`)
+- `ColumnDefinition` has optional `enumValues?: readonly string[]` — populated automatically for enum columns in the generated schema, referencing the `Values` const
+- Enum columns are auto-validated: `collectValidationErrors()` checks `enumValues` on column definitions, so models get enum validation for free without explicit `validates("inclusion")`
+- Migration template: `create_enum_<name>` scaffolds `CREATE TYPE <name> AS ENUM (...)` + `DROP TYPE <name>`
+- `mapPgType()` accepts an optional `enumNames` set — when a type name matches, it maps to the PascalCase TypeScript type name
 
 ### Validation and callback patterns
 - **Associations** stay in `Model()` for type inference: `Model(table, { posts: hasMany(() => Post) })`

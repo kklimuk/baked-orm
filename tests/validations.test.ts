@@ -623,3 +623,107 @@ describe("defineValidator", () => {
 		).toThrow("Unknown validator: nonexistent");
 	});
 });
+
+describe("enum auto-validation", () => {
+	const columns = {
+		status: {
+			type: "USER-DEFINED",
+			nullable: false,
+			columnName: "status",
+			enumValues: ["active", "inactive", "archived"] as const,
+		},
+		name: {
+			type: "text",
+			nullable: false,
+			columnName: "name",
+		},
+	};
+
+	test("rejects invalid enum values", () => {
+		const errors = collectValidationErrors(
+			{ status: "deleted", name: "Alice" },
+			"create",
+			{},
+			columns,
+		);
+		expect(errors.get("status")).toEqual([
+			"is not a valid value (must be one of: active, inactive, archived)",
+		]);
+	});
+
+	test("accepts valid enum values", () => {
+		const errors = collectValidationErrors(
+			{ status: "active", name: "Alice" },
+			"create",
+			{},
+			columns,
+		);
+		expect(errors.isEmpty).toBe(true);
+	});
+
+	test("skips null values for enum columns", () => {
+		const errors = collectValidationErrors(
+			{ status: null, name: "Alice" },
+			"create",
+			{},
+			columns,
+		);
+		expect(errors.isEmpty).toBe(true);
+	});
+
+	test("skips undefined values for enum columns", () => {
+		const errors = collectValidationErrors(
+			{ status: undefined, name: "Alice" },
+			"create",
+			{},
+			columns,
+		);
+		expect(errors.isEmpty).toBe(true);
+	});
+
+	test("skips columns without enumValues", () => {
+		const errors = collectValidationErrors(
+			{ name: "anything" },
+			"create",
+			{},
+			columns,
+		);
+		expect(errors.isEmpty).toBe(true);
+	});
+
+	test("combines enum validation with user-defined validations", () => {
+		const errors = collectValidationErrors(
+			{ status: "deleted", name: "" },
+			"create",
+			{ validations: { name: validates("presence") } },
+			columns,
+		);
+		expect(errors.get("status")).toEqual([
+			"is not a valid value (must be one of: active, inactive, archived)",
+		]);
+		expect(errors.get("name")).toEqual(["can't be blank"]);
+	});
+
+	test("skips enum auto-validation when field has explicit user-defined validation", () => {
+		const errors = collectValidationErrors(
+			{ status: "deleted", name: "Alice" },
+			"create",
+			{
+				validations: {
+					status: validates("inclusion", { in: ["active", "inactive"] }),
+				},
+			},
+			columns,
+		);
+		const statusErrors = errors.get("status");
+		expect(statusErrors).toHaveLength(1);
+		expect(statusErrors).toEqual(["is not included in the list"]);
+	});
+
+	test("works without columns argument (backwards compatible)", () => {
+		const errors = collectValidationErrors({ name: "" }, "create", {
+			validations: { name: validates("presence") },
+		});
+		expect(errors.get("name")).toEqual(["can't be blank"]);
+	});
+});

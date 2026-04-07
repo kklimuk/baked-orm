@@ -179,6 +179,7 @@ export function Model<Row>(
 				this,
 				context,
 				modelClass,
+				columns,
 			);
 			await runCallbacks("afterValidation", this, modelClass);
 		}
