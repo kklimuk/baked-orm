@@ -4,6 +4,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { hydrate } from "../src/frontend/hydrate";
 import { FrontendModel } from "../src/frontend/model";
 import { getFrontendRegistry, registerModels } from "../src/frontend/registry";
+import { Snapshot } from "../src/model/snapshot";
 import { validates } from "../src/model/validations";
 import type { TableDefinition } from "../src/types";
 
@@ -91,8 +92,44 @@ class Post extends FrontendModel(postsTableDef) {
 	declare author: User;
 }
 
+class ProfilesRow {
+	[key: string]: unknown;
+	declare id: string;
+	declare userId: string;
+	declare metadata: unknown;
+	declare createdAt: Date;
+}
+
+const profilesTableDef: TableDefinition<ProfilesRow> = {
+	tableName: "profiles",
+	columns: {
+		id: {
+			type: "uuid",
+			nullable: false,
+			default: "gen_random_uuid()",
+			columnName: "id",
+		},
+		userId: { type: "uuid", nullable: false, columnName: "user_id" },
+		metadata: { type: "jsonb", nullable: true, columnName: "metadata" },
+		createdAt: {
+			type: "timestamp with time zone",
+			nullable: false,
+			default: "now()",
+			columnName: "created_at",
+		},
+	},
+	primaryKey: ["id"],
+	indexes: {},
+	foreignKeys: {},
+	rowClass: ProfilesRow,
+};
+
+class Profile extends FrontendModel(profilesTableDef) {
+	declare metadata: { theme: string; notifications: { email: boolean } };
+}
+
 // Register models so hydrate() can resolve __typename
-registerModels(User, Post);
+registerModels(User, Post, Profile);
 
 // --- Tests ---
 
@@ -369,6 +406,20 @@ describe("hydrate", () => {
 		);
 	});
 
+	test("JSON columns pass through hydration as-is", () => {
+		const profile = hydrate<Profile>({
+			__typename: "Profile",
+			id: "p1",
+			userId: "u1",
+			metadata: { theme: "dark", notifications: { email: true } },
+			createdAt: "2024-06-15T10:30:00Z",
+		});
+		expect(profile.metadata).toEqual({
+			theme: "dark",
+			notifications: { email: true },
+		});
+	});
+
 	test("round-trip: toJSON then hydrate preserves data", () => {
 		const original = new User({
 			name: "Alice",
@@ -389,5 +440,146 @@ describe("hydrate", () => {
 		expect(hydrated.email).toBe("alice@test.com");
 		expect(hydrated.createdAt).toBeInstanceOf(Temporal.Instant);
 		expect(hydrated.isNewRecord).toBe(false);
+	});
+});
+
+describe("JSON/JSONB dirty tracking", () => {
+	describe("via FrontendModel", () => {
+		test("in-place mutation of JSON field is detected as dirty", () => {
+			const profile = new Profile({
+				metadata: { theme: "dark", notifications: { email: true } },
+			} as Partial<ProfilesRow>);
+			profile.markPersisted();
+			expect(profile.changed("metadata")).toBe(false);
+
+			profile.metadata.theme = "light";
+			expect(profile.changed("metadata")).toBe(true);
+		});
+
+		test("nested mutation of JSON field is detected", () => {
+			const profile = new Profile({
+				metadata: { theme: "dark", notifications: { email: true } },
+			} as Partial<ProfilesRow>);
+			profile.markPersisted();
+
+			profile.metadata.notifications.email = false;
+			expect(profile.changed("metadata")).toBe(true);
+			expect(profile.changedAttributes().metadata).toEqual({
+				was: { theme: "dark", notifications: { email: true } },
+				now: { theme: "dark", notifications: { email: false } },
+			});
+		});
+
+		test("JSON field with no mutation stays clean", () => {
+			const profile = new Profile({
+				metadata: { theme: "dark", notifications: { email: true } },
+			} as Partial<ProfilesRow>);
+			profile.markPersisted();
+			expect(profile.changed("metadata")).toBe(false);
+			expect(profile.changed()).toBe(false);
+		});
+
+		test("replacing JSON field by reference is detected", () => {
+			const profile = new Profile({
+				metadata: { theme: "dark", notifications: { email: true } },
+			} as Partial<ProfilesRow>);
+			profile.markPersisted();
+
+			profile.metadata = { theme: "light", notifications: { email: false } };
+			expect(profile.changed("metadata")).toBe(true);
+		});
+
+		test("null JSON field stays clean", () => {
+			const profile = new Profile({
+				metadata: null,
+			} as Partial<ProfilesRow>);
+			profile.markPersisted();
+			expect(profile.changed("metadata")).toBe(false);
+		});
+
+		test("undefined JSON field assigned a value is detected", () => {
+			const profile = new Profile({} as Partial<ProfilesRow>);
+			profile.markPersisted();
+			expect(profile.changed("metadata")).toBe(false);
+
+			profile.metadata = { theme: "dark", notifications: { email: true } };
+			expect(profile.changed("metadata")).toBe(true);
+		});
+
+		test("non-JSON fields still use reference equality", () => {
+			const profile = new Profile({
+				userId: "u1",
+				metadata: { theme: "dark", notifications: { email: true } },
+			} as Partial<ProfilesRow>);
+			profile.markPersisted();
+
+			(profile as Record<string, unknown>).userId = "u2";
+			expect(profile.changed("userId")).toBe(true);
+		});
+	});
+
+	describe("via Snapshot directly", () => {
+		const columns = {
+			id: { type: "uuid", nullable: false, columnName: "id" },
+			data: { type: "jsonb", nullable: true, columnName: "data" },
+			config: { type: "json", nullable: true, columnName: "config" },
+			name: { type: "text", nullable: false, columnName: "name" },
+		};
+
+		test("capture clones JSON values so mutations are detected", () => {
+			const snapshot = new Snapshot(columns, "id");
+			const instance: Record<string, unknown> = {
+				id: "1",
+				data: { count: 0 },
+				config: { debug: true },
+				name: "test",
+			};
+			snapshot.capture(instance);
+
+			(instance.data as Record<string, unknown>).count = 1;
+			expect(snapshot.changed(instance, "data")).toBe(true);
+			expect(snapshot.changed(instance, "name")).toBe(false);
+		});
+
+		test("dirtyEntries includes mutated JSON columns", () => {
+			const snapshot = new Snapshot(columns, "id");
+			const instance: Record<string, unknown> = {
+				id: "1",
+				data: { count: 0 },
+				config: { debug: true },
+				name: "test",
+			};
+			snapshot.capture(instance);
+
+			(instance.data as Record<string, unknown>).count = 1;
+			const dirty = snapshot.dirtyEntries(instance);
+			expect(dirty.map(([key]) => key)).toEqual(["data"]);
+		});
+
+		test("both json and jsonb types are deep-tracked", () => {
+			const snapshot = new Snapshot(columns, "id");
+			const instance: Record<string, unknown> = {
+				id: "1",
+				data: { nested: { value: 1 } },
+				config: { flags: ["a"] },
+				name: "test",
+			};
+			snapshot.capture(instance);
+
+			(
+				(instance.data as Record<string, unknown>).nested as Record<
+					string,
+					unknown
+				>
+			).value = 2;
+			((instance.config as Record<string, unknown>).flags as string[]).push(
+				"b",
+			);
+
+			expect(snapshot.changed(instance, "data")).toBe(true);
+			expect(snapshot.changed(instance, "config")).toBe(true);
+			const dirty = snapshot.dirtyEntries(instance);
+			expect(dirty.map(([key]) => key)).toEqual(["data", "config"]);
+		});
 	});
 });

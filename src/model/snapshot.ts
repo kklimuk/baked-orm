@@ -1,10 +1,15 @@
 import type { ColumnDefinition } from "../types";
 
+function isJsonType(type: string): boolean {
+	return type === "json" || type === "jsonb";
+}
+
 /** Snapshot-based dirty tracking. Stores column values at a point in time and compares against current instance state. */
 export class Snapshot {
 	#data: Map<string, unknown> = new Map();
 	#columns: Record<string, ColumnDefinition>;
 	#primaryKeyField: string;
+	#jsonColumns: Set<string>;
 
 	constructor(
 		columns: Record<string, ColumnDefinition>,
@@ -12,24 +17,44 @@ export class Snapshot {
 	) {
 		this.#columns = columns;
 		this.#primaryKeyField = primaryKeyField;
+		this.#jsonColumns = new Set(
+			Object.entries(columns)
+				.filter(([, definition]) => isJsonType(definition.type))
+				.map(([camelKey]) => camelKey),
+		);
 	}
 
 	/** Store current column values from the instance. */
 	capture(instance: Record<string, unknown>): void {
 		this.#data.clear();
 		for (const camelKey of Object.keys(this.#columns)) {
-			this.#data.set(camelKey, instance[camelKey]);
+			const value = instance[camelKey];
+			this.#data.set(
+				camelKey,
+				this.#jsonColumns.has(camelKey) && value != null
+					? structuredClone(value)
+					: value,
+			);
 		}
+	}
+
+	#hasChanged(camelKey: string, instance: Record<string, unknown>): boolean {
+		const was = this.#data.get(camelKey);
+		const now = instance[camelKey];
+		if (this.#jsonColumns.has(camelKey)) {
+			return !Bun.deepEquals(was, now);
+		}
+		return was !== now;
 	}
 
 	/** Check if a specific field (or any non-PK field) has changed since last capture. */
 	changed(instance: Record<string, unknown>, fieldName?: string): boolean {
 		if (fieldName !== undefined) {
-			return this.#data.get(fieldName) !== instance[fieldName];
+			return this.#hasChanged(fieldName, instance);
 		}
 		for (const camelKey of Object.keys(this.#columns)) {
 			if (camelKey === this.#primaryKeyField) continue;
-			if (this.#data.get(camelKey) !== instance[camelKey]) return true;
+			if (this.#hasChanged(camelKey, instance)) return true;
 		}
 		return false;
 	}
@@ -41,9 +66,12 @@ export class Snapshot {
 		const changes: Record<string, { was: unknown; now: unknown }> = {};
 		for (const camelKey of Object.keys(this.#columns)) {
 			if (camelKey === this.#primaryKeyField) continue;
-			const was = this.#data.get(camelKey);
-			const now = instance[camelKey];
-			if (was !== now) changes[camelKey] = { was, now };
+			if (this.#hasChanged(camelKey, instance)) {
+				changes[camelKey] = {
+					was: this.#data.get(camelKey),
+					now: instance[camelKey],
+				};
+			}
 		}
 		return changes;
 	}
@@ -55,7 +83,7 @@ export class Snapshot {
 		return Object.entries(this.#columns).filter(
 			([camelKey]) =>
 				camelKey !== this.#primaryKeyField &&
-				this.#data.get(camelKey) !== instance[camelKey],
+				this.#hasChanged(camelKey, instance),
 		);
 	}
 }

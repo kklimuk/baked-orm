@@ -97,6 +97,9 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Both `ModelBase` and `FrontendBase` own a private `#snapshot: Snapshot` and delegate to it
 - `save()` on a persisted record with no changes skips the UPDATE SQL entirely (callbacks still fire)
 - Snapshot resets after `save()`, `reload()`, `markPersisted()` (called by `hydrateInstance`)
+- JSON/JSONB columns use deep dirty tracking: `capture()` stores `structuredClone(value)` for JSON columns, `changed()` and `dirtyEntries()` use `Bun.deepEquals()` instead of `!==`. This detects in-place mutations like `user.metadata.theme = "dark"`. Non-JSON columns still use reference equality
+- JSON column detection is automatic from `ColumnDefinition.type` (`"json"` or `"jsonb"`), computed once in the `Snapshot` constructor
+- Users narrow `unknown` JSON column types via `declare` on their model subclass: `declare settings: UserSettings`
 
 ### Connection pool
 - `DatabaseConfig` in `src/types.ts` accepts `max`, `idleTimeout`, `maxLifetime`, `connectionTimeout` — passed directly to `Bun.sql`

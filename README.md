@@ -306,6 +306,57 @@ await user.save();            // UPDATE users SET "name" = $1 WHERE "id" = $2
 
 Saving a persisted record with no changes skips the UPDATE entirely.
 
+#### JSON/JSONB columns
+
+The generated schema types `json`/`jsonb` columns as `unknown`. Narrow the type with `declare` on your model:
+
+```ts
+// Define the shape of your JSON column
+interface UserSettings {
+  theme: "light" | "dark";
+  notifications: { email: boolean; push: boolean };
+}
+
+// Generated schema (don't edit):
+// export class UsersRow {
+//   declare id: string;
+//   declare settings: unknown;  // ← jsonb
+// }
+
+// Your model — narrow the type:
+class User extends Model(users) {
+  declare settings: UserSettings;
+}
+
+// Now fully typed:
+user.settings.theme;                    // "light" | "dark"
+user.settings.notifications.email;      // boolean
+```
+
+Dirty tracking works for in-place mutations of JSON columns — no need to replace the entire object:
+
+```ts
+const user = await User.find(id);
+user.settings.theme = "dark";           // mutate in place
+user.changed("settings");               // true — detected via deep comparison
+await user.save();                      // UPDATE users SET "settings" = $1 WHERE "id" = $2
+```
+
+This uses `structuredClone` on capture and `Bun.deepEquals` on comparison. For very large JSON blobs, replacing the reference (`user.settings = { ...newValue }`) avoids the deep comparison cost.
+
+The same pattern works with frontend models — `FrontendModel` shares the same `Snapshot` engine:
+
+```ts
+// frontend/models/user.ts
+class User extends FrontendModel(users) {
+  declare settings: UserSettings;
+}
+
+const user = User.fromJSON(apiResponse);
+user.settings.theme = "dark";
+user.changed("settings");               // true
+```
+
 ### Transactions
 
 All queries inside a `transaction()` block automatically use the same connection:
