@@ -7,7 +7,12 @@ import { discoverMigrations } from "../src/runner";
 import type { ResolvedConfig } from "../src/types";
 
 function makeConfig(migrationsPath: string): ResolvedConfig {
-	return { migrationsPath, schemaPath: "./db/schema.ts" };
+	return {
+		migrationsPath,
+		schemaPath: "./db/schema.ts",
+		modelsPath: "./models",
+		frontendModelsPath: "./frontend/models",
+	};
 }
 
 describe("discoverMigrations", () => {

@@ -38,6 +38,8 @@ function makeConfig(): ResolvedConfig {
 	return {
 		migrationsPath: join(tempDir, "migrations"),
 		schemaPath: join(tempDir, "schema.ts"),
+		modelsPath: "./models",
+		frontendModelsPath: "./frontend/models",
 	};
 }
 

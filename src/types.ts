@@ -49,18 +49,24 @@ export type DatabaseConfig = {
 export type BakedConfig = {
 	migrationsPath?: string;
 	schemaPath?: string;
+	modelsPath?: string;
+	frontendModelsPath?: string;
 	database?: string | DatabaseConfig;
 };
 
 export type ResolvedConfig = {
 	migrationsPath: string;
 	schemaPath: string;
+	modelsPath: string;
+	frontendModelsPath: string;
 	database?: string | DatabaseConfig;
 };
 
 export const DEFAULT_CONFIG: ResolvedConfig = {
 	migrationsPath: "./db/migrations",
 	schemaPath: "./db/schema.ts",
+	modelsPath: "./models",
+	frontendModelsPath: "./frontend/models",
 };
 
 export type Migration = {

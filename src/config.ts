@@ -13,13 +13,20 @@ export async function resolveConfig(): Promise<ResolvedConfig> {
 	try {
 		const mod = await import(configPath);
 		userConfig = mod.default ?? mod;
-	} catch {
+	} catch (error) {
+		const errorCode = (error as Record<string, unknown>)?.code;
+		const isNotFound =
+			errorCode === "ERR_MODULE_NOT_FOUND" || errorCode === "MODULE_NOT_FOUND";
+		if (!isNotFound) throw error;
 		// No config file found — use defaults
 	}
 
 	return {
 		migrationsPath: userConfig.migrationsPath ?? DEFAULT_CONFIG.migrationsPath,
 		schemaPath: userConfig.schemaPath ?? DEFAULT_CONFIG.schemaPath,
+		modelsPath: userConfig.modelsPath ?? DEFAULT_CONFIG.modelsPath,
+		frontendModelsPath:
+			userConfig.frontendModelsPath ?? DEFAULT_CONFIG.frontendModelsPath,
 		database: userConfig.database,
 	};
 }

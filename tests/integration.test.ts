@@ -27,6 +27,8 @@ function makeConfig(migrationsPath: string): ResolvedConfig {
 	return {
 		migrationsPath,
 		schemaPath: join(tempDir, "schema.ts"),
+		modelsPath: "./models",
+		frontendModelsPath: "./frontend/models",
 	};
 }
 
