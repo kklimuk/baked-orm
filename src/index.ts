@@ -9,6 +9,9 @@ export type {
 export { connect, disconnect, transaction } from "./model/connection";
 export { ValidationError, ValidationErrors } from "./model/errors";
 export { QueryBuilder } from "./model/query";
+export type { SerializeOptions } from "./model/serializer";
+export { serialize } from "./model/serializer";
+export { Snapshot } from "./model/snapshot";
 export type {
 	AssociationDefinition,
 	BaseModel,

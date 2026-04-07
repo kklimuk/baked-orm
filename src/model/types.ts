@@ -171,6 +171,7 @@ export interface BaseModel {
 	readonly isNewRecord: boolean;
 	readonly errors: ValidationErrors;
 	markPersisted(): void;
+	assignAttributes(attributes: Record<string, unknown>): void;
 	save(): Promise<void>;
 	update(attributes: Record<string, unknown>): Promise<void>;
 	destroy(): Promise<void>;
@@ -180,6 +181,11 @@ export interface BaseModel {
 	changedAttributes(): Record<string, { was: unknown; now: unknown }>;
 	load<K extends keyof this>(name: K & string): Promise<this[K]>;
 	toJSON(): Record<string, unknown>;
+	serialize(options?: {
+		only?: string[];
+		except?: string[];
+		include?: string[] | Record<string, unknown>;
+	}): Record<string, unknown>;
 }
 
 /**

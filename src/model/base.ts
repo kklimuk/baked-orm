@@ -3,6 +3,9 @@ import { runCallbacks } from "./callbacks";
 import { getModelConnection } from "./connection";
 import { ValidationError, ValidationErrors } from "./errors";
 import { QueryBuilder } from "./query";
+import type { SerializeOptions } from "./serializer";
+import { serialize as serializeModel } from "./serializer";
+import { Snapshot } from "./snapshot";
 import {
 	type AnyAssociationDef,
 	type AnyModelStatic,
@@ -20,6 +23,7 @@ import {
 import {
 	buildConflictClause,
 	buildReverseColumnMap,
+	buildSensitiveColumns,
 	executeQuery,
 	hydrateInstance,
 	mapRowToModel,
@@ -97,7 +101,7 @@ export function Model<Row>(
 	>) {
 		#persisted = false;
 		#validationErrors = new ValidationErrors();
-		#snapshot: Map<string, unknown> = new Map();
+		#snapshot = new Snapshot(columns, primaryKeyField);
 
 		static tableDefinition = tableDefinition;
 		static tableName = tableName;
@@ -124,38 +128,15 @@ export function Model<Row>(
 
 		markPersisted(): void {
 			this.#persisted = true;
-			this.#takeSnapshot();
+			this.#snapshot.capture(this);
 		}
 
 		changed(fieldName?: string): boolean {
-			if (fieldName !== undefined) {
-				return this.#snapshot.get(fieldName) !== this[fieldName];
-			}
-			for (const camelKey of Object.keys(columns)) {
-				if (camelKey === primaryKeyField) continue;
-				if (this.#snapshot.get(camelKey) !== this[camelKey]) return true;
-			}
-			return false;
+			return this.#snapshot.changed(this, fieldName);
 		}
 
 		changedAttributes(): Record<string, { was: unknown; now: unknown }> {
-			const changes: Record<string, { was: unknown; now: unknown }> = {};
-			for (const camelKey of Object.keys(columns)) {
-				if (camelKey === primaryKeyField) continue;
-				const snapshotValue = this.#snapshot.get(camelKey);
-				const currentValue = this[camelKey];
-				if (snapshotValue !== currentValue) {
-					changes[camelKey] = { was: snapshotValue, now: currentValue };
-				}
-			}
-			return changes;
-		}
-
-		#takeSnapshot(): void {
-			this.#snapshot.clear();
-			for (const camelKey of Object.keys(columns)) {
-				this.#snapshot.set(camelKey, this[camelKey]);
-			}
+			return this.#snapshot.changedAttributes(this);
 		}
 
 		async isValid(): Promise<boolean> {
@@ -202,8 +183,13 @@ export function Model<Row>(
 			await runCallbacks("afterValidation", this, modelClass);
 		}
 
+		#getSensitiveColumns(): Set<string> {
+			return buildSensitiveColumns(this.constructor, columns);
+		}
+
 		async #performInsert(): Promise<void> {
 			const connection = getModelConnection();
+			const sensitiveDbColumns = this.#getSensitiveColumns();
 			const columnEntries = Object.entries(columns).filter(
 				([camelKey]) => this[camelKey] !== undefined,
 			);
@@ -214,25 +200,27 @@ export function Model<Row>(
 			const placeholders = dbColumns.map((_, index) => `$${index + 1}`);
 
 			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`;
-			const rows = await executeQuery(connection, text, values);
+			const rows = await executeQuery(
+				connection,
+				text,
+				values,
+				sensitiveDbColumns,
+			);
 			const row = rows[0] as Record<string, unknown> | undefined;
 			if (row) {
 				Object.assign(this, mapRowToModel(row, reverseMap));
 			}
 			this.#persisted = true;
-			this.#takeSnapshot();
+			this.#snapshot.capture(this);
 		}
 
 		async #performUpdate(): Promise<void> {
-			const dirtyEntries = Object.entries(columns).filter(
-				([camelKey]) =>
-					camelKey !== primaryKeyField &&
-					this.#snapshot.get(camelKey) !== this[camelKey],
-			);
+			const dirtyEntries = this.#snapshot.dirtyEntries(this);
 
 			if (dirtyEntries.length === 0) return;
 
 			const connection = getModelConnection();
+			const sensitiveDbColumns = this.#getSensitiveColumns();
 			const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
 			const setClauses = dirtyEntries.map(
 				([, definition], index) =>
@@ -244,16 +232,25 @@ export function Model<Row>(
 			];
 
 			const text = `UPDATE ${quoteIdentifier(tableName)} SET ${setClauses.join(", ")} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $${dirtyEntries.length + 1} RETURNING *`;
-			const rows = await executeQuery(connection, text, values);
+			const rows = await executeQuery(
+				connection,
+				text,
+				values,
+				sensitiveDbColumns,
+			);
 			const row = rows[0] as Record<string, unknown> | undefined;
 			if (row) {
 				Object.assign(this, mapRowToModel(row, reverseMap));
 			}
-			this.#takeSnapshot();
+			this.#snapshot.capture(this);
+		}
+
+		assignAttributes(attributes: Partial<Row>): void {
+			Object.assign(this, attributes);
 		}
 
 		async update(attributes: Partial<Row>): Promise<void> {
-			Object.assign(this, attributes);
+			this.assignAttributes(attributes);
 			await this.save();
 		}
 
@@ -263,9 +260,15 @@ export function Model<Row>(
 			await runCallbacks("beforeDestroy", this, modelClass);
 
 			const connection = getModelConnection();
+			const sensitiveDbColumns = this.#getSensitiveColumns();
 			const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
 			const text = `DELETE FROM ${quoteIdentifier(tableName)} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $1`;
-			await executeQuery(connection, text, [this[primaryKeyField]]);
+			await executeQuery(
+				connection,
+				text,
+				[this[primaryKeyField]],
+				sensitiveDbColumns,
+			);
 			this.#persisted = false;
 
 			await runCallbacks("afterDestroy", this, modelClass);
@@ -273,16 +276,20 @@ export function Model<Row>(
 
 		async reload(): Promise<void> {
 			const connection = getModelConnection();
+			const sensitiveDbColumns = this.#getSensitiveColumns();
 			const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
 			const text = `SELECT * FROM ${quoteIdentifier(tableName)} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $1`;
-			const rows = await executeQuery(connection, text, [
-				this[primaryKeyField],
-			]);
+			const rows = await executeQuery(
+				connection,
+				text,
+				[this[primaryKeyField]],
+				sensitiveDbColumns,
+			);
 			const row = rows[0] as Record<string, unknown> | undefined;
 			if (row) {
 				Object.assign(this, mapRowToModel(row, reverseMap));
 			}
-			this.#takeSnapshot();
+			this.#snapshot.capture(this);
 		}
 
 		async load(associationName: string): Promise<unknown> {
@@ -302,11 +309,11 @@ export function Model<Row>(
 		}
 
 		toJSON(): Record<string, unknown> {
-			const result: Record<string, unknown> = {};
-			for (const camelKey of Object.keys(columns)) {
-				result[camelKey] = this[camelKey];
-			}
-			return result;
+			return serializeModel(this, tableDefinition);
+		}
+
+		serialize(options?: SerializeOptions): Record<string, unknown> {
+			return serializeModel(this, tableDefinition, options);
 		}
 
 		// --- Class methods ---
@@ -405,10 +412,16 @@ export function Model<Row>(
 
 			const { dbColumns, allValues, rowPlaceholders } =
 				buildBatchParams(records);
+			const sensitiveDbColumns = buildSensitiveColumns(this, columns);
 
 			const connection = getModelConnection();
 			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")} RETURNING *`;
-			const rows = await executeQuery(connection, text, allValues);
+			const rows = await executeQuery(
+				connection,
+				text,
+				allValues,
+				sensitiveDbColumns,
+			);
 
 			return hydrateRows(this, rows);
 		}
@@ -419,6 +432,7 @@ export function Model<Row>(
 			options: UpsertOptions,
 		): Promise<InstanceType<Subclass>> {
 			const connection = getModelConnection();
+			const sensitiveDbColumns = buildSensitiveColumns(this, columns);
 			const camelKeys = Object.keys(attributes);
 			const dbColumns = camelKeys.map((key) => resolveColumnName(key, columns));
 			const values = camelKeys.map(
@@ -433,7 +447,12 @@ export function Model<Row>(
 			);
 
 			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")}) ON CONFLICT (${conflictClause}) DO UPDATE SET ${updateSet} RETURNING *`;
-			const rows = await executeQuery(connection, text, values);
+			const rows = await executeQuery(
+				connection,
+				text,
+				values,
+				sensitiveDbColumns,
+			);
 			const row = rows[0] as Record<string, unknown> | undefined;
 			const mapped = row ? mapRowToModel(row, reverseMap) : {};
 			return hydrateInstance(this, mapped) as InstanceType<Subclass>;
@@ -448,6 +467,7 @@ export function Model<Row>(
 
 			const { dbColumns, allValues, rowPlaceholders } =
 				buildBatchParams(records);
+			const sensitiveDbColumns = buildSensitiveColumns(this, columns);
 
 			const { conflictClause, updateSet } = buildConflictClause(
 				dbColumns,
@@ -457,7 +477,12 @@ export function Model<Row>(
 
 			const connection = getModelConnection();
 			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")} ON CONFLICT (${conflictClause}) DO UPDATE SET ${updateSet} RETURNING *`;
-			const rows = await executeQuery(connection, text, allValues);
+			const rows = await executeQuery(
+				connection,
+				text,
+				allValues,
+				sensitiveDbColumns,
+			);
 
 			return hydrateRows(this, rows);
 		}

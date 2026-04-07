@@ -22,7 +22,8 @@
 		"bake": "./src/cli.ts"
 	},
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./frontend": "./src/frontend/index.ts"
 	},
 	"files": [
 		"src/",
@@ -39,7 +40,7 @@
 	},
 	"scripts": {
 		"check": "biome check . && knip-bun && tsc --noEmit",
-		"db": "bun run ./src/cli.ts",
+		"bake": "bun run ./src/cli.ts",
 		"test": "bun test",
 		"format": "biome check --write .",
 		"prepare": "husky",
