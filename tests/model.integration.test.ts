@@ -662,6 +662,41 @@ describe("Eager loading", () => {
 			expect(author?.name).toBe("Alice");
 		}
 	});
+
+	test("includes preloads polymorphic belongsTo associations", async () => {
+		const user = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		const post = await Post.create({ userId: user.id, title: "Post 1" });
+
+		await Comment.create({
+			commentableType: "Post",
+			commentableId: post.id,
+			body: "Comment on post",
+		});
+		await Comment.create({
+			commentableType: "User",
+			commentableId: user.id,
+			body: "Comment on user",
+		});
+
+		const comments = await Comment.all().includes("commentable").toArray();
+		expect(comments).toHaveLength(2);
+
+		const postComment = comments.find(
+			(comment) => comment.body === "Comment on post",
+		);
+		const userComment = comments.find(
+			(comment) => comment.body === "Comment on user",
+		);
+
+		expect(postComment?.commentable).not.toBeNull();
+		expect((postComment?.commentable as Post).title).toBe("Post 1");
+
+		expect(userComment?.commentable).not.toBeNull();
+		expect((userComment?.commentable as User).name).toBe("Alice");
+	});
 });
 
 describe("Nested eager loading", () => {
