@@ -31,7 +31,8 @@ Database migration tool and ORM for Bun. PostgreSQL only via `Bun.sql`.
 
 Migration name prefixes scaffold contextual templates:
 - `create_enum_<name>` — CREATE TYPE AS ENUM + DROP TYPE
-- `create_<table>` — CREATE TABLE with id, created_at, updated_at + DROP TABLE
+- `create_<table>` — CREATE TABLE with id, created_at, updated_at + `set_updated_at()` trigger + DROP TABLE
+- `soft_delete_<table>` — ADD COLUMN discarded_at + partial index + DROP COLUMN
 - `update_<table>` or `alter_<table>` — ALTER TABLE ADD COLUMN + DROP COLUMN
 - `delete_<table>` or `drop_<table>` — DROP TABLE + CREATE TABLE stub
 - No prefix — blank up/down template
@@ -72,6 +73,22 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Migration template: `create_enum_<name>` scaffolds `CREATE TYPE <name> AS ENUM (...)` + `DROP TYPE <name>`
 - `mapPgType()` accepts an optional `enumNames` set — when a type name matches, it maps to the PascalCase TypeScript type name
 
+### Soft deletes (discard pattern)
+- Opt-in via `static softDelete = true` on the model class. Follows the Ruby `discard` gem pattern, NOT the `paranoia` pattern
+- `destroy()` is NOT overridden — it still hard-deletes. Soft delete uses separate `discard()` / `undiscard()` verbs
+- No default scope — `Model.where(...)` returns all records. Use `Model.kept()` / `Model.discarded()` for explicit filtering
+- Column convention: `discarded_at` timestamptz (nullable), camelCase `discardedAt`
+- Instance methods: `discard()` (sets `discarded_at = now()`), `undiscard()` (sets `discarded_at = NULL`), `isDiscarded` / `isKept` getters
+- Static scopes: `Model.kept()` and `Model.discarded()` return `QueryBuilder` with WHERE clause pre-applied, chainable with `.where()`, `.order()`, etc.
+- Own callback lifecycle: `beforeDiscard`/`afterDiscard`, `beforeUndiscard`/`afterUndiscard` — does NOT run save validations or save callbacks
+- Bulk operations: `QueryBuilder.discardAll()` / `undiscardAll()` — skip callbacks, consistent with `updateAll`/`deleteAll`
+- All soft-delete methods throw if `softDelete` is not enabled on the model
+- Migration template: `soft_delete_<table>` scaffolds `ADD COLUMN discarded_at` + partial index `WHERE discarded_at IS NULL`
+
+### Timestamps
+- `create_<table>` migration template includes a shared `set_updated_at()` PostgreSQL trigger function (idempotent via `CREATE OR REPLACE`) and a per-table `trg_<table>_updated_at` trigger that auto-sets `updated_at = now()` on every UPDATE
+- The trigger function is NOT dropped in migration `down` since other tables may reference it
+
 ### Validation and callback patterns
 - **Associations** stay in `Model()` for type inference: `Model(table, { posts: hasMany(() => Post) })`
 - **Validations** are declared as static properties: `static validations = { name: validates("presence") }`
@@ -83,6 +100,8 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Type-safe field names via `static validations = { ... } satisfies ValidationConfig<Row>`
 - Callback lifecycle (save): beforeValidation -> validations -> afterValidation -> beforeSave -> beforeCreate/beforeUpdate -> SQL -> afterCreate/afterUpdate -> afterSave
 - Callback lifecycle (destroy): beforeDestroy -> SQL -> afterDestroy
+- Callback lifecycle (discard): beforeDiscard -> SQL -> afterDiscard
+- Callback lifecycle (undiscard): beforeUndiscard -> SQL -> afterUndiscard
 - Bulk operations (`createMany`, `upsertAll`, `updateAll`, `deleteAll`) skip validations and callbacks
 
 ### Serialization

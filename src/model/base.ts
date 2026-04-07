@@ -58,6 +58,20 @@ export function Model<Row>(
 	const primaryKeyField = tableDefinition.primaryKey[0] ?? "id";
 	const reverseMap = buildReverseColumnMap(columns);
 
+	let cachedDiscardedAtDbColumn: string | null = null;
+
+	function getDiscardedAtDbColumn(): string {
+		if (cachedDiscardedAtDbColumn) return cachedDiscardedAtDbColumn;
+		const definition = columns.discardedAt;
+		if (!definition) {
+			throw new Error(
+				`softDelete is enabled but table "${tableName}" does not have a "discarded_at" column. Run: bun bake db generate soft_delete_${tableName}`,
+			);
+		}
+		cachedDiscardedAtDbColumn = definition.columnName;
+		return cachedDiscardedAtDbColumn;
+	}
+
 	function buildBatchParams(records: Partial<Row>[]): {
 		dbColumns: string[];
 		allValues: unknown[];
@@ -275,6 +289,60 @@ export function Model<Row>(
 			await runCallbacks("afterDestroy", this, modelClass);
 		}
 
+		async #performDiscard(setValue: string): Promise<void> {
+			const connection = getModelConnection();
+			const sensitiveDbColumns = this.#getSensitiveColumns();
+			const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
+			const discardedAtDbColumn = getDiscardedAtDbColumn();
+			const text = `UPDATE ${quoteIdentifier(tableName)} SET ${quoteIdentifier(discardedAtDbColumn)} = ${setValue} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $1 RETURNING *`;
+			const rows = await executeQuery(
+				connection,
+				text,
+				[this[primaryKeyField]],
+				sensitiveDbColumns,
+			);
+			const row = rows[0] as Record<string, unknown> | undefined;
+			if (row) {
+				Object.assign(this, mapRowToModel(row, reverseMap));
+			}
+			this.#snapshot.capture(this);
+		}
+
+		#requireSoftDelete(method: string): Record<string, unknown> {
+			const modelClass = this.constructor as unknown as Record<string, unknown>;
+			if (!modelClass.softDelete) {
+				throw new Error(
+					`Cannot ${method} ${this.constructor.name}: softDelete is not enabled on this model`,
+				);
+			}
+			if (this.isNewRecord) {
+				throw new Error(`Cannot ${method} a new record. Save it first.`);
+			}
+			return modelClass;
+		}
+
+		async discard(): Promise<void> {
+			const modelClass = this.#requireSoftDelete("discard");
+			await runCallbacks("beforeDiscard", this, modelClass);
+			await this.#performDiscard("now()");
+			await runCallbacks("afterDiscard", this, modelClass);
+		}
+
+		async undiscard(): Promise<void> {
+			const modelClass = this.#requireSoftDelete("undiscard");
+			await runCallbacks("beforeUndiscard", this, modelClass);
+			await this.#performDiscard("NULL");
+			await runCallbacks("afterUndiscard", this, modelClass);
+		}
+
+		get isDiscarded(): boolean {
+			return this.discardedAt != null;
+		}
+
+		get isKept(): boolean {
+			return this.discardedAt == null;
+		}
+
 		async reload(): Promise<void> {
 			const connection = getModelConnection();
 			const sensitiveDbColumns = this.#getSensitiveColumns();
@@ -350,6 +418,30 @@ export function Model<Row>(
 			return new QueryBuilder<Row>(tableDefinition, {
 				modelClass: this as unknown as new (attributes?: Partial<Row>) => Row,
 			});
+		}
+
+		static kept(): QueryBuilder<Row> {
+			const modelClass = this as unknown as Record<string, unknown>;
+			if (!modelClass.softDelete) {
+				throw new Error(
+					`Cannot call kept() on ${this.name}: softDelete is not enabled on this model`,
+				);
+			}
+			const discardedAtDbColumn = getDiscardedAtDbColumn();
+			return this.whereRaw(`${quoteIdentifier(discardedAtDbColumn)} IS NULL`);
+		}
+
+		static discarded(): QueryBuilder<Row> {
+			const modelClass = this as unknown as Record<string, unknown>;
+			if (!modelClass.softDelete) {
+				throw new Error(
+					`Cannot call discarded() on ${this.name}: softDelete is not enabled on this model`,
+				);
+			}
+			const discardedAtDbColumn = getDiscardedAtDbColumn();
+			return this.whereRaw(
+				`${quoteIdentifier(discardedAtDbColumn)} IS NOT NULL`,
+			);
 		}
 
 		static async find<Subclass extends typeof ModelBase>(

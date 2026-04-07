@@ -4,6 +4,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import {
 	buildTemplate,
 	extractEnumName,
+	extractSoftDeleteTableName,
 	extractTableName,
 	formatTimestamp,
 } from "../src/commands/generate";
@@ -38,6 +39,11 @@ describe("extractTableName", () => {
 		expect(extractTableName("create_enum_user_role")).toBeNull();
 	});
 
+	test("returns null for soft delete migration names", () => {
+		expect(extractTableName("soft_delete_posts")).toBeNull();
+		expect(extractTableName("soft_delete_user_accounts")).toBeNull();
+	});
+
 	test("handles compound table names", () => {
 		expect(extractTableName("create_user_roles")).toBe("user_roles");
 	});
@@ -57,6 +63,23 @@ describe("buildTemplate", () => {
 		expect(template).toContain("updated_at");
 		expect(template).toContain("export async function up");
 		expect(template).toContain("export async function down");
+	});
+
+	test("create_ template includes updated_at trigger", () => {
+		const template = buildTemplate("create_users");
+		expect(template).toContain("CREATE OR REPLACE FUNCTION set_updated_at()");
+		expect(template).toContain("NEW.updated_at = now()");
+		expect(template).toContain("CREATE TRIGGER trg_users_updated_at");
+		expect(template).toContain("BEFORE UPDATE ON users");
+		expect(template).toContain("EXECUTE FUNCTION set_updated_at()");
+		expect(template).toContain(
+			"DROP TRIGGER IF EXISTS trg_users_updated_at ON users",
+		);
+	});
+
+	test("create_ template down does not drop the shared trigger function", () => {
+		const template = buildTemplate("create_users");
+		expect(template).not.toContain("DROP FUNCTION");
 	});
 
 	test("generates ALTER TABLE template for update_ prefix", () => {
@@ -101,6 +124,15 @@ describe("buildTemplate", () => {
 		expect(template).toContain("export async function down");
 	});
 
+	test("generates soft delete template for soft_delete_ prefix", () => {
+		const template = buildTemplate("soft_delete_posts");
+		expect(template).toContain("ADD COLUMN discarded_at timestamptz");
+		expect(template).toContain("idx_posts_discarded_at");
+		expect(template).toContain("WHERE discarded_at IS NULL");
+		expect(template).toContain("DROP INDEX IF EXISTS idx_posts_discarded_at");
+		expect(template).toContain("DROP COLUMN discarded_at");
+	});
+
 	test("all templates import TransactionSQL", () => {
 		const names = [
 			"create_users",
@@ -108,6 +140,7 @@ describe("buildTemplate", () => {
 			"delete_users",
 			"add_indexes",
 			"create_enum_status",
+			"soft_delete_posts",
 		];
 		for (const name of names) {
 			expect(buildTemplate(name)).toContain(
@@ -130,6 +163,24 @@ describe("extractEnumName", () => {
 		expect(extractEnumName("create_users")).toBeNull();
 		expect(extractEnumName("update_users")).toBeNull();
 		expect(extractEnumName("add_indexes")).toBeNull();
+	});
+});
+
+describe("extractSoftDeleteTableName", () => {
+	test("extracts table name from soft_delete_ prefix", () => {
+		expect(extractSoftDeleteTableName("soft_delete_posts")).toBe("posts");
+	});
+
+	test("extracts compound table name", () => {
+		expect(extractSoftDeleteTableName("soft_delete_user_accounts")).toBe(
+			"user_accounts",
+		);
+	});
+
+	test("returns null for non-soft-delete prefixes", () => {
+		expect(extractSoftDeleteTableName("create_users")).toBeNull();
+		expect(extractSoftDeleteTableName("update_users")).toBeNull();
+		expect(extractSoftDeleteTableName("add_indexes")).toBeNull();
 	});
 });
 

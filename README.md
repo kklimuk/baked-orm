@@ -62,7 +62,8 @@ The generator recognizes naming conventions and scaffolds contextual templates:
 | Command | Generates |
 |---|---|
 | `bun bake db generate create_enum_status` | `CREATE TYPE status AS ENUM (...)` + `DROP TYPE` |
-| `bun bake db generate create_users` | `CREATE TABLE users` with id, timestamps + `DROP TABLE` |
+| `bun bake db generate create_users` | `CREATE TABLE users` with id, timestamps, `updated_at` trigger + `DROP TABLE` |
+| `bun bake db generate soft_delete_posts` | `ADD COLUMN discarded_at` + partial index + `DROP COLUMN` |
 | `bun bake db generate update_users` | `ALTER TABLE users ADD COLUMN` + `DROP COLUMN` |
 | `bun bake db generate alter_users` | Same as `update_` |
 | `bun bake db generate delete_users` | `DROP TABLE users` + `CREATE TABLE` stub |
@@ -507,6 +508,65 @@ Generate an enum migration:
 bun bake db generate create_enum_status
 ```
 
+### Soft deletes (discard pattern)
+
+Opt-in soft deletes that don't override `destroy()` and don't add default scopes — inspired by Ruby's [discard](https://github.com/jhawthorn/discard) gem:
+
+```ts
+class Post extends Model(posts) {
+  static softDelete = true;
+}
+
+// Soft delete — sets discarded_at, does NOT delete the row
+await post.discard();
+post.isDiscarded;                        // true
+post.isKept;                             // false
+
+// Restore
+await post.undiscard();
+
+// Hard delete — still works, actually removes the row
+await post.destroy();
+```
+
+Query scopes are explicit — no default scope, no hidden WHERE clauses:
+
+```ts
+// All records (including discarded)
+await Post.all();
+
+// Only non-discarded records
+await Post.kept();
+await Post.kept().where({ authorId: user.id }).order({ createdAt: "DESC" });
+
+// Only discarded records
+await Post.discarded();
+
+// Bulk operations (skip callbacks)
+await Post.where({ authorId: user.id }).discardAll();
+await Post.discarded().undiscardAll();
+```
+
+Lifecycle callbacks:
+
+```ts
+class Post extends Model(posts) {
+  static softDelete = true;
+  static beforeDiscard = [(record) => {
+    console.log(`Discarding post ${record.id}`);
+  }];
+  static afterUndiscard = [(record) => {
+    console.log(`Restored post ${record.id}`);
+  }];
+}
+```
+
+Generate a migration to add the `discarded_at` column to an existing table:
+
+```bash
+bun bake db generate soft_delete_posts
+```
+
 ### Callbacks
 
 Lifecycle callbacks are declared as static arrays on the model class:
@@ -532,6 +592,10 @@ Available hooks (in execution order):
 **Save:** `beforeValidation` → validations → `afterValidation` → `beforeSave` → `beforeCreate`/`beforeUpdate` → SQL → `afterCreate`/`afterUpdate` → `afterSave`
 
 **Destroy:** `beforeDestroy` → SQL → `afterDestroy`
+
+**Discard:** `beforeDiscard` → SQL → `afterDiscard`
+
+**Undiscard:** `beforeUndiscard` → SQL → `afterUndiscard`
 
 If a `before*` callback throws, the operation aborts.
 

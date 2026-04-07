@@ -395,6 +395,50 @@ export class QueryBuilder<Row> {
 		return (result as unknown as { count: number }).count;
 	}
 
+	#resolveDiscardedAtColumn(): string {
+		const entry = Object.entries(this.#tableDefinition.columns).find(
+			([, definition]) => definition.columnName === "discarded_at",
+		);
+		if (!entry) {
+			throw new Error(
+				`Cannot call discardAll()/undiscardAll(): table "${this.#tableDefinition.tableName}" does not have a "discarded_at" column`,
+			);
+		}
+		return entry[1].columnName;
+	}
+
+	async discardAll(): Promise<number> {
+		const columnName = this.#resolveDiscardedAtColumn();
+		const tableName = this.#tableDefinition.tableName;
+		const updateText = `UPDATE ${quoteIdentifier(tableName)} SET ${quoteIdentifier(columnName)} = now()`;
+		const { text, values } = this.#appendWhere(updateText);
+
+		const connection = getModelConnection();
+		const result = await executeQuery(
+			connection,
+			text,
+			values,
+			this.#sensitiveColumns,
+		);
+		return (result as unknown as { count: number }).count;
+	}
+
+	async undiscardAll(): Promise<number> {
+		const columnName = this.#resolveDiscardedAtColumn();
+		const tableName = this.#tableDefinition.tableName;
+		const updateText = `UPDATE ${quoteIdentifier(tableName)} SET ${quoteIdentifier(columnName)} = NULL`;
+		const { text, values } = this.#appendWhere(updateText);
+
+		const connection = getModelConnection();
+		const result = await executeQuery(
+			connection,
+			text,
+			values,
+			this.#sensitiveColumns,
+		);
+		return (result as unknown as { count: number }).count;
+	}
+
 	async findEach(
 		callback: (record: Row) => void | Promise<void>,
 		options?: { batchSize?: number },

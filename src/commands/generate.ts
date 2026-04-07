@@ -5,6 +5,7 @@ import { relative, resolve } from "path";
 import type { ResolvedConfig } from "../types";
 
 const ENUM_PREFIX = /^create_enum_/;
+const SOFT_DELETE_PREFIX = /^soft_delete_/;
 
 const TABLE_PREFIXES = {
 	create: /^create_/,
@@ -14,6 +15,7 @@ const TABLE_PREFIXES = {
 
 export function extractTableName(migrationName: string): string | null {
 	if (ENUM_PREFIX.test(migrationName)) return null;
+	if (SOFT_DELETE_PREFIX.test(migrationName)) return null;
 	for (const pattern of Object.values(TABLE_PREFIXES)) {
 		if (pattern.test(migrationName)) {
 			return migrationName.replace(pattern, "");
@@ -29,7 +31,33 @@ export function extractEnumName(migrationName: string): string | null {
 	return null;
 }
 
+export function extractSoftDeleteTableName(
+	migrationName: string,
+): string | null {
+	if (SOFT_DELETE_PREFIX.test(migrationName)) {
+		return migrationName.replace(SOFT_DELETE_PREFIX, "");
+	}
+	return null;
+}
+
 export function buildTemplate(migrationName: string): string {
+	const softDeleteTable = extractSoftDeleteTableName(migrationName);
+
+	if (softDeleteTable) {
+		return `import type { TransactionSQL } from "bun";
+
+export async function up(txn: TransactionSQL) {
+\tawait txn\`ALTER TABLE ${softDeleteTable} ADD COLUMN discarded_at timestamptz\`;
+\tawait txn\`CREATE INDEX idx_${softDeleteTable}_discarded_at ON ${softDeleteTable} (discarded_at) WHERE discarded_at IS NULL\`;
+}
+
+export async function down(txn: TransactionSQL) {
+\tawait txn\`DROP INDEX IF EXISTS idx_${softDeleteTable}_discarded_at\`;
+\tawait txn\`ALTER TABLE ${softDeleteTable} DROP COLUMN discarded_at\`;
+}
+`;
+	}
+
 	const enumName = extractEnumName(migrationName);
 
 	if (enumName) {
@@ -52,15 +80,31 @@ export async function down(txn: TransactionSQL) {
 
 export async function up(txn: TransactionSQL) {
 \tawait txn\`
+\t\tCREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+\t\tBEGIN
+\t\t\tNEW.updated_at = now();
+\t\t\tRETURN NEW;
+\t\tEND;
+\t\t$$ LANGUAGE plpgsql
+\t\`;
+
+\tawait txn\`
 \t\tCREATE TABLE ${tableName} (
 \t\t\tid uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 \t\t\tcreated_at timestamptz NOT NULL DEFAULT now(),
 \t\t\tupdated_at timestamptz NOT NULL DEFAULT now()
 \t\t)
 \t\`;
+
+\tawait txn\`
+\t\tCREATE TRIGGER trg_${tableName}_updated_at
+\t\tBEFORE UPDATE ON ${tableName}
+\t\tFOR EACH ROW EXECUTE FUNCTION set_updated_at()
+\t\`;
 }
 
 export async function down(txn: TransactionSQL) {
+\tawait txn\`DROP TRIGGER IF EXISTS trg_${tableName}_updated_at ON ${tableName}\`;
 \tawait txn\`DROP TABLE ${tableName}\`;
 }
 `;

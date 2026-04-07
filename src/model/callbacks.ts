@@ -8,7 +8,11 @@ export type CallbackHook =
 	| "beforeUpdate"
 	| "afterUpdate"
 	| "beforeDestroy"
-	| "afterDestroy";
+	| "afterDestroy"
+	| "beforeDiscard"
+	| "afterDiscard"
+	| "beforeUndiscard"
+	| "afterUndiscard";
 
 export type CallbackFunction = (
 	record: Record<string, unknown>,

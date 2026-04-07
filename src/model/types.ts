@@ -175,6 +175,10 @@ export interface BaseModel {
 	save(): Promise<void>;
 	update(attributes: Record<string, unknown>): Promise<void>;
 	destroy(): Promise<void>;
+	discard(): Promise<void>;
+	undiscard(): Promise<void>;
+	readonly isDiscarded: boolean;
+	readonly isKept: boolean;
 	reload(): Promise<void>;
 	isValid(): Promise<boolean>;
 	changed(fieldName?: string): boolean;
@@ -217,6 +221,13 @@ export interface ModelStatic<Row> {
 		count: number,
 	): QueryBuilder<InstanceType<Self>>;
 	all<Self extends ModelStatic<Row>>(
+		this: Self,
+	): QueryBuilder<InstanceType<Self>>;
+
+	kept<Self extends ModelStatic<Row>>(
+		this: Self,
+	): QueryBuilder<InstanceType<Self>>;
+	discarded<Self extends ModelStatic<Row>>(
 		this: Self,
 	): QueryBuilder<InstanceType<Self>>;
 
