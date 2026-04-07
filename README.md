@@ -15,7 +15,7 @@ Add a script alias to your `package.json`:
 ```json
 {
   "scripts": {
-    "db": "bake"
+    "bake": "bake"
   }
 }
 ```
@@ -35,7 +35,7 @@ PGDATABASE=myapp
 ### Initialize config (optional)
 
 ```bash
-bun db init
+bun bake db init
 ```
 
 Generates a `baked.config.ts` with default settings, pre-populated with database connection details from your environment variables. This is optional — baked-orm works with zero configuration.
@@ -43,8 +43,8 @@ Generates a `baked.config.ts` with default settings, pre-populated with database
 ### Create or drop a database
 
 ```bash
-bun db create myapp           # Create the database
-bun db drop myapp             # Drop the database
+bun bake db create myapp           # Create the database
+bun bake db drop myapp             # Drop the database
 ```
 
 Connects to the `postgres` maintenance database to run `CREATE DATABASE` or `DROP DATABASE`. Uses connection details from your config or `PG*` env vars.
@@ -52,7 +52,7 @@ Connects to the `postgres` maintenance database to run `CREATE DATABASE` or `DRO
 ### Generate a migration
 
 ```bash
-bun db generate <migration_name>
+bun bake db generate <migration_name>
 ```
 
 Creates a timestamped migration file at `db/migrations/{timestamp}.<name>.ts`.
@@ -61,12 +61,12 @@ The generator recognizes naming conventions and scaffolds contextual templates:
 
 | Command | Generates |
 |---|---|
-| `bun db generate create_users` | `CREATE TABLE users` with id, timestamps + `DROP TABLE` |
-| `bun db generate update_users` | `ALTER TABLE users ADD COLUMN` + `DROP COLUMN` |
-| `bun db generate alter_users` | Same as `update_` |
-| `bun db generate delete_users` | `DROP TABLE users` + `CREATE TABLE` stub |
-| `bun db generate drop_users` | Same as `delete_` |
-| `bun db generate add_indexes` | Blank `up`/`down` template |
+| `bun bake db generate create_users` | `CREATE TABLE users` with id, timestamps + `DROP TABLE` |
+| `bun bake db generate update_users` | `ALTER TABLE users ADD COLUMN` + `DROP COLUMN` |
+| `bun bake db generate alter_users` | Same as `update_` |
+| `bun bake db generate delete_users` | `DROP TABLE users` + `CREATE TABLE` stub |
+| `bun bake db generate drop_users` | Same as `delete_` |
+| `bun bake db generate add_indexes` | Blank `up`/`down` template |
 
 Example generated file for `create_users`:
 
@@ -91,10 +91,10 @@ export async function down(txn: TransactionSQL) {
 ### Run migrations
 
 ```bash
-bun db migrate up              # Run all pending migrations
-bun db migrate up --count=1    # Run next pending migration
-bun db migrate down            # Rollback last migration
-bun db migrate down --count=3  # Rollback last 3 migrations
+bun bake db migrate up              # Run all pending migrations
+bun bake db migrate up --count=1    # Run next pending migration
+bun bake db migrate down            # Rollback last migration
+bun bake db migrate down --count=3  # Rollback last 3 migrations
 ```
 
 All migrations run inside a transaction with an advisory lock to prevent concurrent execution. If any step fails, the entire migration is rolled back.
@@ -104,10 +104,37 @@ All migrations run inside a transaction with an advisory lock to prevent concurr
 ### Check status
 
 ```bash
-bun db status
+bun bake db status
 ```
 
 Shows which migrations have been applied and which are pending.
+
+### Generate a model
+
+```bash
+bun bake model User                          # infers table "users"
+bun bake model BlogPost                      # infers table "blog_posts"
+bun bake model User --table user_accounts    # explicit table name
+```
+
+Generates both backend and frontend model files:
+
+```
+models/user.ts              ← import { Model } from "baked-orm"
+frontend/models/user.ts     ← import { FrontendModel } from "baked-orm/frontend"
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--table <name>` | Explicit table name (default: inferred) |
+| `--backend <path>` | Override backend output directory |
+| `--frontend <path>` | Override frontend output directory |
+| `--no-frontend` | Skip frontend model |
+| `--no-backend` | Skip backend model |
+
+Output directories default to `modelsPath` and `frontendModelsPath` from `baked.config.ts`.
 
 ## Schema file
 
@@ -423,6 +450,102 @@ Available hooks (in execution order):
 
 If a `before*` callback throws, the operation aborts.
 
+### Serialization & frontend hydration
+
+baked-orm supports a full server-to-client data pipeline: serialize models to JSON on the backend, hydrate them into typed frontend model instances on the client. Every serialized object includes a `__typename` field (like GraphQL) so the frontend knows which model to hydrate into.
+
+#### 1. Backend: define models with sensitive fields
+
+Sensitive fields are excluded from serialization and redacted in query logs — passwords never leak to the client or into your log files:
+
+```ts
+// models/user.ts (server)
+import { Model, hasMany } from "baked-orm";
+import { users } from "../db/schema";
+
+export class User extends Model(users, { posts: hasMany(() => Post) }) {
+  static sensitiveFields = ["passwordDigest"];
+}
+```
+
+#### 2. Backend: serialize for the API response
+
+`toJSON()` includes all non-sensitive columns plus `__typename`. For associations and field control, use `serialize()` with Rails-style options:
+
+```ts
+// API handler
+const user = await User.find(id);
+await user.load("posts");
+
+// Default — all non-sensitive columns + __typename
+user.toJSON();
+// → { __typename: "User", id: "...", name: "...", email: "...", createdAt: Date }
+
+// With associations
+user.serialize({ include: ["posts", "posts.comments"] });
+
+// Column filtering + nested association options
+user.serialize({
+  only: ["id", "name", "email"],
+  include: {
+    posts: { only: ["id", "title"], include: { comments: { except: ["spam"] } } }
+  }
+});
+```
+
+#### 3. Frontend: define models and register them
+
+Import from `baked-orm/frontend` — a lightweight entrypoint with no server dependencies. Frontend models share the same `db/schema.ts` table definitions and support dirty tracking, validations, and hydration:
+
+```ts
+// models/user.ts (client)
+import { FrontendModel, registerModels, validates } from "baked-orm/frontend";
+import { users, posts } from "../db/schema";
+
+class User extends FrontendModel(users) {
+  static validations = { name: validates("presence"), email: validates("email") };
+  declare posts: Post[];
+}
+
+class Post extends FrontendModel(posts) {
+  declare author: User;
+}
+
+// Register once at app startup so hydrate() can resolve __typename
+registerModels(User, Post);
+```
+
+#### 4. Frontend: hydrate API responses
+
+`fromJSON()` / `hydrate()` automatically converts date strings to `Temporal.Instant`, resolves nested associations via `__typename`, and marks instances as persisted:
+
+```ts
+const data = await fetch("/api/users/1").then(r => r.json());
+const user = User.fromJSON(data);
+
+user.createdAt;              // Temporal.Instant (auto-converted from ISO string)
+user.posts[0];               // Post instance (not a plain object)
+user.isNewRecord;            // false (came from server)
+```
+
+#### 5. Frontend: forms with dirty tracking and validation
+
+```ts
+// Track changes for forms
+user.name = "Updated";
+user.changed("name");        // true
+user.changedAttributes();    // { name: { was: "Old", now: "Updated" } }
+
+// Validate before submitting
+user.name = "";
+user.isValid();              // false
+user.errors.fullMessages();  // ["Name can't be blank"]
+
+// Serialize back for the API request
+user.toJSON();
+// → { __typename: "User", id: "...", name: "", email: "...", createdAt: Temporal.Instant }
+```
+
 ### camelCase convention
 
 All snake_case DB column names are automatically converted to camelCase in generated Row classes. You never write `user_id` — always `userId`. The actual DB column name is stored in `ColumnDefinition.columnName` for the query builder to translate back.
@@ -433,6 +556,8 @@ By default, baked-orm uses:
 
 - **Migrations path**: `./db/migrations`
 - **Schema path**: `./db/schema.ts`
+- **Models path**: `./models`
+- **Frontend models path**: `./frontend/models`
 - **Database**: Bun's built-in SQL driver (reads from `PG*` env vars)
 
 Override with `baked.config.ts`:
@@ -449,6 +574,8 @@ export default defineConfig({
 export default defineConfig({
   migrationsPath: "./db/migrations",
   schemaPath: "./db/schema.ts",
+  modelsPath: "./models",
+  frontendModelsPath: "./frontend/models",
   database: {
     hostname: Bun.env.PGHOST,
     port: Number(Bun.env.PGPORT),
@@ -486,7 +613,7 @@ Pool options are passed directly to Bun's SQL driver. URL-style `database` strin
 bun install
 
 # Integration tests require a local PostgreSQL database
-bun db create baked_orm_test
+bun bake db create baked_orm_test
 
 bun test           # run tests
 bun run check      # biome + knip + tsc

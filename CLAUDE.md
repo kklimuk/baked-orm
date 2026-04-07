@@ -7,7 +7,8 @@ Database migration tool and ORM for Bun. PostgreSQL only via `Bun.sql`.
 - `bun run check` — runs biome, knip, and tsc
 - `bun test` — runs unit and integration tests (requires local `baked_orm_test` database)
 - `bun run format` — auto-fix biome issues
-- `bun db <command>` — CLI entry point (requires `"db": "bake"` script alias)
+- `bun bake db <command>` — database CLI (requires `"bake": "bake"` script alias)
+- `bun bake model <Name>` — generate backend + frontend model files
 
 ## Code style
 
@@ -38,22 +39,25 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 
 ## Architecture
 
+### CLI
+- `src/cli.ts` — CLI entry with namespace routing. `bake db <command>` for migrations, `bake model <Name>` for model generation
+- `src/commands/model.ts` — `runModel()` generates backend and frontend model files. Uses `toPascalCase` for class names, `toSnakeCase` for file/table names, infers table name by lowercasing + "s". Supports `--table`, `--backend`, `--frontend`, `--no-frontend`, `--no-backend` flags
+
 ### Migration system
-- `src/cli.ts` — CLI entry, parses commands via `util.parseArgs`
 - `src/config.ts` — loads `baked.config.ts`, provides `getConnection()` for DB access
 - `src/runner.ts` — migration discovery, advisory locking, transactional up/down execution, duplicate timestamp detection
 - `src/introspect.ts` — queries `information_schema` + `pg_type` to generate typed `db/schema.ts` with camelCase properties and `columnName` mapping
 - `src/commands/` — one file per CLI command (init, create, drop, generate, migrate, status)
 
 ### ORM layer
-- `src/model/base.ts` — `Model()` mixin function. Returns a class extending the generated Row class with CRUD, query, association, validation, callback, and dirty tracking methods. Uses `this` in static methods for polymorphic subclass support. `save()` runs validation + callback lifecycle; `#performUpdate()` only sends dirty columns
+- `src/model/base.ts` — `Model()` mixin function. Returns a class extending the generated Row class with CRUD, query, association, validation, callback, and dirty tracking methods. Uses `this` in static methods for polymorphic subclass support. `save()` runs validation + callback lifecycle; `#performUpdate()` only sends dirty columns. `assignAttributes()` sets multiple fields without saving (used by `update()` internally)
 - `src/model/query.ts` — immutable, chainable `QueryBuilder`. Uses parameterized queries via `executeQuery()` for SQL injection safety. Thenable via `then()`. Includes `findEach`/`findInBatches` for cursor-based batch processing
 - `src/model/associations.ts` — `loadAssociation()` and `preloadAssociations()` for belongsTo, hasOne, hasMany, hasManyThrough, and polymorphic associations. Supports nested eager loading via dotted paths (`includes("posts.comments")`). Model registry maps class names to constructors for polymorphic resolution
 - `src/model/validations.ts` — `validates()` factory for field-level rules (presence, length, numericality, format, inclusion, exclusion, email), `validate()` for record-level custom validators, `defineValidator()` registry for user-defined validators, `collectValidationErrors()` runner
 - `src/model/callbacks.ts` — `runCallbacks()` discovers and executes lifecycle callback arrays from static properties on the model class
 - `src/model/errors.ts` — `ValidationError` (thrown by `save()` on failure) and `ValidationErrors` (Rails-like Map-backed error collection with `add`, `get`, `fullMessages`, `fullMessagesFor`, `toJSON`)
 - `src/model/connection.ts` — connection singleton wrapping existing config system. `AsyncLocalStorage` scopes transactions. Supports `onQuery` callback for query logging
-- `src/model/utils.ts` — shared utilities: `quoteIdentifier`, `resolveColumnName`, `buildReverseColumnMap`, `mapRowToModel`, `hydrateInstance`, `executeQuery` (with logging), `buildConflictClause`
+- `src/model/utils.ts` — shared utilities: `quoteIdentifier`, `resolveColumnName`, `buildReverseColumnMap`, `mapRowToModel`, `hydrateInstance`, `executeQuery` (with logging + sensitive column redaction), `buildConflictClause`, `buildSensitiveColumns`
 - `src/model/types.ts` — `ModelStatic<Row>`, `BaseModel`, `AnyModelStatic`, `AssociationDefinition`, `RecordNotFoundError`. Also exports branded association types (`HasManyDef`, `HasOneDef`, `BelongsToDef`, `HasManyThroughDef`) and standalone factory functions (`hasMany`, `hasOne`, `belongsTo`, `hasManyThrough`) for the `Model(table, associations)` API
 
 ### Association declaration patterns
@@ -73,15 +77,29 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Callback lifecycle (destroy): beforeDestroy -> SQL -> afterDestroy
 - Bulk operations (`createMany`, `upsertAll`, `updateAll`, `deleteAll`) skip validations and callbacks
 
+### Serialization
+- `src/model/serializer.ts` — `serialize()` function produces JSON-ready objects with `__typename` (GraphQL-style type discriminator). Supports `only`/`except` column filtering, `sensitiveFields` (always excluded), and nested `include` for associations (string[] shorthand or per-association options)
+- `toJSON()` delegates to `serialize()` without options — includes `__typename` + all non-sensitive columns
+- `serialize({ include: ["posts.comments"], except: ["passwordDigest"] })` for explicit control
+- `sensitiveFields` also redacts values in query logs — `executeQuery` accepts per-query `sensitiveColumns: Set<string>` (DB column names) and parses the SQL to match `$N` parameters to column names, redacting matches with `[REDACTED]`. Covers INSERT, UPDATE SET, WHERE, and batch operations. Per-model scoping via `buildSensitiveColumns()` with WeakMap caching — no global state
+
 ### Dirty tracking
-- Snapshot-based: after each load/save, a snapshot of column values is stored. `#performUpdate()` diffs current values against the snapshot and only sends dirty columns
-- `changed(fieldName?)` — returns whether any (or a specific) field has been modified since last save/load
-- `changedAttributes()` — returns `{ fieldName: { was, now } }` for all modified fields
+- `src/model/snapshot.ts` — `Snapshot` class encapsulates snapshot-based dirty tracking. Shared between backend `Model` and frontend `FrontendModel`
+- `Snapshot` methods: `capture(instance)`, `changed(instance, fieldName?)`, `changedAttributes(instance)`, `dirtyEntries(instance)`
+- Both `ModelBase` and `FrontendBase` own a private `#snapshot: Snapshot` and delegate to it
 - `save()` on a persisted record with no changes skips the UPDATE SQL entirely (callbacks still fire)
 - Snapshot resets after `save()`, `reload()`, `markPersisted()` (called by `hydrateInstance`)
 
 ### Connection pool
 - `DatabaseConfig` in `src/types.ts` accepts `max`, `idleTimeout`, `maxLifetime`, `connectionTimeout` — passed directly to `Bun.sql`
+
+### Frontend model layer
+- `src/frontend/model.ts` — `FrontendModel()` factory. Returns a class with dirty tracking (via `Snapshot`), validations (reuses `collectValidationErrors`), and `toJSON()` — but no CRUD, query builder, callbacks, or DB connection
+- `src/frontend/hydrate.ts` — `hydrate()` function. Uses `__typename` to resolve model class from frontend registry, converts date columns to `Temporal.Instant`/`Temporal.PlainDate` using `TableDefinition.columns` type metadata, recursively hydrates nested associations
+- `src/frontend/index.ts` — `baked-orm/frontend` entrypoint. Exports `FrontendModel`, `hydrate`, `registerModels`, plus re-exports of validation/error types
+- Frontend models import `db/schema.ts` directly — no separate manifest needed. Column type info from `TableDefinition.columns` drives hydration type conversion
+- `FrontendModel(tableDefinition)` mirrors `Model(tableDefinition)` API shape for consistency
+- `registerModels(User, Post, ...)` must be called before `hydrate()` so the registry can resolve `__typename` to model classes. Models also auto-register on first instantiation
 
 ### Tests
 - `tests/` — unit tests for pure functions, integration tests for migrations and ORM (CRUD, queries, associations, transactions, eager loading, nested eager loading, validations, callbacks, dirty tracking)

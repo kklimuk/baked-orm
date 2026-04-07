@@ -3,6 +3,7 @@ import { getModelConnection } from "./connection";
 import type { OrderDirection } from "./types";
 import {
 	buildReverseColumnMap,
+	buildSensitiveColumns,
 	executeQuery,
 	hydrateInstance,
 	mapRowToModel,
@@ -31,6 +32,7 @@ export class QueryBuilder<Row> {
 	readonly #joinClauses: string[];
 	readonly #includedAssociations: string[];
 	readonly #modelClass: (new (attributes?: Partial<Row>) => Row) | null;
+	readonly #sensitiveColumns: Set<string>;
 
 	constructor(
 		tableDefinition: TableDefinition<Row>,
@@ -57,6 +59,9 @@ export class QueryBuilder<Row> {
 		this.#joinClauses = options?.joinClauses ?? [];
 		this.#includedAssociations = options?.includedAssociations ?? [];
 		this.#modelClass = options?.modelClass ?? null;
+		this.#sensitiveColumns = options?.modelClass
+			? buildSensitiveColumns(options.modelClass, tableDefinition.columns)
+			: new Set();
 	}
 
 	#clone(overrides: {
@@ -192,6 +197,27 @@ export class QueryBuilder<Row> {
 		});
 	}
 
+	#appendJoins(text: string): string {
+		for (const joinClause of this.#joinClauses) {
+			text += ` ${joinClause}`;
+		}
+		return text;
+	}
+
+	#appendWhere(text: string): { text: string; values: unknown[] } {
+		const values: unknown[] = [];
+		if (this.#whereClauses.length > 0) {
+			const whereFragments = this.#whereClauses.map(
+				(clause) => clause.fragment,
+			);
+			text += ` WHERE ${whereFragments.join(" AND ")}`;
+			for (const clause of this.#whereClauses) {
+				values.push(...clause.values);
+			}
+		}
+		return { text, values };
+	}
+
 	toSQL(): { text: string; values: unknown[] } {
 		const tableName = this.#tableDefinition.tableName;
 		const columns =
@@ -199,22 +225,10 @@ export class QueryBuilder<Row> {
 				? this.#selectColumns.map(quoteIdentifier).join(", ")
 				: `${quoteIdentifier(tableName)}.*`;
 
-		let text = `SELECT ${columns} FROM ${quoteIdentifier(tableName)}`;
-
-		for (const joinClause of this.#joinClauses) {
-			text += ` ${joinClause}`;
-		}
-
-		const allValues: unknown[] = [];
-		if (this.#whereClauses.length > 0) {
-			const whereFragments = this.#whereClauses.map(
-				(clause) => clause.fragment,
-			);
-			text += ` WHERE ${whereFragments.join(" AND ")}`;
-			for (const clause of this.#whereClauses) {
-				allValues.push(...clause.values);
-			}
-		}
+		let selectText = `SELECT ${columns} FROM ${quoteIdentifier(tableName)}`;
+		selectText = this.#appendJoins(selectText);
+		const { text: withWhere, values } = this.#appendWhere(selectText);
+		let text = withWhere;
 
 		if (this.#orderClauses.length > 0) {
 			const orderParts = this.#orderClauses.map(
@@ -231,13 +245,18 @@ export class QueryBuilder<Row> {
 			text += ` OFFSET ${this.#offsetValue}`;
 		}
 
-		return { text, values: allValues };
+		return { text, values };
 	}
 
 	async toArray(): Promise<Row[]> {
 		const { text, values } = this.toSQL();
 		const connection = getModelConnection();
-		const rows = await executeQuery(connection, text, values);
+		const rows = await executeQuery(
+			connection,
+			text,
+			values,
+			this.#sensitiveColumns,
+		);
 		const ModelClass = this.#modelClass ?? this.#tableDefinition.rowClass;
 
 		const results: Row[] = [];
@@ -288,49 +307,36 @@ export class QueryBuilder<Row> {
 	}
 
 	async count(): Promise<number> {
-		const { values } = this.toSQL();
 		const tableName = this.#tableDefinition.tableName;
-
-		let text = `SELECT COUNT(*) AS count FROM ${quoteIdentifier(tableName)}`;
-
-		for (const joinClause of this.#joinClauses) {
-			text += ` ${joinClause}`;
-		}
-
-		if (this.#whereClauses.length > 0) {
-			const whereFragments = this.#whereClauses.map(
-				(clause) => clause.fragment,
-			);
-			text += ` WHERE ${whereFragments.join(" AND ")}`;
-		}
+		let countText = `SELECT COUNT(*) AS count FROM ${quoteIdentifier(tableName)}`;
+		countText = this.#appendJoins(countText);
+		const { text, values } = this.#appendWhere(countText);
 
 		const connection = getModelConnection();
-		const rows = await executeQuery(connection, text, values);
+		const rows = await executeQuery(
+			connection,
+			text,
+			values,
+			this.#sensitiveColumns,
+		);
 		const row = rows[0] as { count: number | string } | undefined;
 		return row ? Number(row.count) : 0;
 	}
 
 	async exists(): Promise<boolean> {
-		const { values } = this.toSQL();
 		const tableName = this.#tableDefinition.tableName;
-
-		let text = `SELECT 1 FROM ${quoteIdentifier(tableName)}`;
-
-		for (const joinClause of this.#joinClauses) {
-			text += ` ${joinClause}`;
-		}
-
-		if (this.#whereClauses.length > 0) {
-			const whereFragments = this.#whereClauses.map(
-				(clause) => clause.fragment,
-			);
-			text += ` WHERE ${whereFragments.join(" AND ")}`;
-		}
-
-		text += " LIMIT 1";
+		let existsText = `SELECT 1 FROM ${quoteIdentifier(tableName)}`;
+		existsText = this.#appendJoins(existsText);
+		const { text: withWhere, values } = this.#appendWhere(existsText);
+		const text = `${withWhere} LIMIT 1`;
 
 		const connection = getModelConnection();
-		const rows = await executeQuery(connection, text, values);
+		const rows = await executeQuery(
+			connection,
+			text,
+			values,
+			this.#sensitiveColumns,
+		);
 		return rows.length > 0;
 	}
 
@@ -365,27 +371,27 @@ export class QueryBuilder<Row> {
 		}
 
 		const connection = getModelConnection();
-		const result = await executeQuery(connection, text, setValues);
+		const result = await executeQuery(
+			connection,
+			text,
+			setValues,
+			this.#sensitiveColumns,
+		);
 		return (result as unknown as { count: number }).count;
 	}
 
 	async deleteAll(): Promise<number> {
 		const tableName = this.#tableDefinition.tableName;
-		let text = `DELETE FROM ${quoteIdentifier(tableName)}`;
-		const allValues: unknown[] = [];
-
-		if (this.#whereClauses.length > 0) {
-			const whereFragments = this.#whereClauses.map(
-				(clause) => clause.fragment,
-			);
-			text += ` WHERE ${whereFragments.join(" AND ")}`;
-			for (const clause of this.#whereClauses) {
-				allValues.push(...clause.values);
-			}
-		}
+		const deleteText = `DELETE FROM ${quoteIdentifier(tableName)}`;
+		const { text, values } = this.#appendWhere(deleteText);
 
 		const connection = getModelConnection();
-		const result = await executeQuery(connection, text, allValues);
+		const result = await executeQuery(
+			connection,
+			text,
+			values,
+			this.#sensitiveColumns,
+		);
 		return (result as unknown as { count: number }).count;
 	}
 

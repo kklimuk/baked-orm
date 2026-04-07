@@ -14,7 +14,8 @@ export async function runDrop(config: ResolvedConfig, args: string[]) {
 		await connection.unsafe(`DROP DATABASE ${quoteIdentifier(databaseName)}`);
 		console.log(`\x1b[32mDropped\x1b[0m database ${databaseName}`);
 	} catch (error) {
-		if (error instanceof Error && error.message.includes("does not exist")) {
+		const pgError = error as Record<string, unknown>;
+		if (pgError?.errno === "3D000") {
 			console.log(`\x1b[33mDatabase ${databaseName} does not exist.\x1b[0m`);
 		} else {
 			throw error;

@@ -314,6 +314,8 @@ function collectLoadedRecords(
 	return collected;
 }
 
+const MAX_EAGER_DEPTH = 10;
+
 export async function preloadAssociations<Row>(
 	records: Row[],
 	associationNames: string[],
@@ -322,7 +324,7 @@ export async function preloadAssociations<Row>(
 	tableDefinition: TableDefinition<Row>,
 ): Promise<void> {
 	const tree = parseIncludesPaths(associationNames);
-	await preloadAssociationTree(records, tree, modelClass, tableDefinition);
+	await preloadAssociationTree(records, tree, modelClass, tableDefinition, 0);
 }
 
 async function preloadAssociationTree<Row>(
@@ -331,8 +333,14 @@ async function preloadAssociationTree<Row>(
 	// biome-ignore lint/suspicious/noExplicitAny: model classes have dynamic static properties
 	modelClass: any,
 	tableDefinition: TableDefinition<Row>,
+	depth: number,
 ): Promise<void> {
 	if (records.length === 0 || tree.size === 0) return;
+	if (depth >= MAX_EAGER_DEPTH) {
+		throw new Error(
+			`Eager loading exceeded maximum depth of ${MAX_EAGER_DEPTH}. Check for circular includes.`,
+		);
+	}
 
 	const connection = getModelConnection();
 	const primaryKey = (tableDefinition.primaryKey[0] ?? "id") as keyof Row &
@@ -371,6 +379,7 @@ async function preloadAssociationTree<Row>(
 						childTree,
 						targetModel,
 						targetDef,
+						depth + 1,
 					);
 				}
 			}

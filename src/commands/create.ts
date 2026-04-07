@@ -14,7 +14,8 @@ export async function runCreate(config: ResolvedConfig, args: string[]) {
 		await connection.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
 		console.log(`\x1b[32mCreated\x1b[0m database ${databaseName}`);
 	} catch (error) {
-		if (error instanceof Error && error.message.includes("already exists")) {
+		const pgError = error as Record<string, unknown>;
+		if (pgError?.errno === "42P04") {
 			console.log(`\x1b[33mDatabase ${databaseName} already exists.\x1b[0m`);
 		} else {
 			throw error;
