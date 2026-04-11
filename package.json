@@ -1,6 +1,6 @@
 {
 	"name": "baked-orm",
-	"version": "0.4.1",
+	"version": "0.5.0",
 	"description": "ActiveRecord-inspired ORM and migration tool for Bun. PostgreSQL-native with auto-generated typed schemas.",
 	"license": "MIT",
 	"keywords": [
