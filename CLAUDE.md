@@ -53,7 +53,8 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 
 ### ORM layer
 - `src/model/base.ts` — `Model()` mixin function. Returns a class extending the generated Row class with CRUD, query, association, validation, callback, and dirty tracking methods. Uses `this` in static methods for polymorphic subclass support. `save()` runs validation + callback lifecycle; `#performUpdate()` only sends dirty columns. `assignAttributes()` sets multiple fields without saving (used by `update()` internally)
-- `src/model/query.ts` — immutable, chainable `QueryBuilder`. Uses parameterized queries via `executeQuery()` for SQL injection safety. Thenable via `then()`. Includes `findEach`/`findInBatches` for cursor-based batch processing
+- `src/model/query.ts` — immutable, chainable `QueryBuilder`. Uses parameterized queries via `executeQuery()` for SQL injection safety. Thenable via `then()`. Includes `findEach`/`findInBatches` for cursor-based batch processing, `pluck`/`distinct` for raw column projection, and `recursiveOn`/`descendants`/`ancestors` for self-referential CTE traversal. `WhereClause` tracks the DB column names each clause references (or `null` for `whereRaw`) so the recursive step can omit predicates that filter on the join columns themselves
+- `src/model/recursive.ts` — pure helpers for recursive CTE construction: `requalifyFragment` (rewrites bare `"col"` tokens to `"alias"."col"` for known columns), `renumberParameters` (shifts `$N` placeholders by an offset), `buildKnownColumnNames` (extracts the DB column name set from a `TableDefinition`)
 - `src/model/associations.ts` — `loadAssociation()` and `preloadAssociations()` for belongsTo, hasOne, hasMany, hasManyThrough, and polymorphic associations. Supports nested eager loading via dotted paths (`includes("posts.comments")`). Model registry maps class names to constructors for polymorphic resolution
 - `src/model/validations.ts` — `validates()` factory for field-level rules (presence, length, numericality, format, inclusion, exclusion, email), `validate()` for record-level custom validators, `defineValidator()` registry for user-defined validators, `collectValidationErrors()` runner. Enum columns with `enumValues` in their `ColumnDefinition` are auto-validated without explicit `validates("inclusion")` — invalid values produce `"is not a valid value (must be one of: ...)"` errors
 - `src/model/callbacks.ts` — `runCallbacks()` discovers and executes lifecycle callback arrays from static properties on the model class
@@ -73,6 +74,21 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Enum columns are auto-validated: `collectValidationErrors()` checks `enumValues` on column definitions, so models get enum validation for free without explicit `validates("inclusion")`
 - Migration template: `create_enum_<name>` scaffolds `CREATE TYPE <name> AS ENUM (...)` + `DROP TYPE <name>`
 - `mapPgType()` accepts an optional `enumNames` set — when a type name matches, it maps to the PascalCase TypeScript type name
+
+### Pluck and distinct
+- `QueryBuilder.pluck("col")` returns `Promise<Row["col"][]>` — raw column values, no model hydration. Composes with `where`, `order`, `limit`, `distinct`, and the recursive CTE wrapper
+- Multi-column form: `QueryBuilder.pluck("col1", "col2")` returns `Promise<[Row["col1"], Row["col2"]][]>`
+- `QueryBuilder.distinct()` emits `SELECT DISTINCT`. Composes with `pluck` and `toArray`
+- Internally `pluck`/`count`/`exists`/`toSQL` all share the private `#buildSql(projection)` helper, parameterized by a projection mode (`default` / `columns` / `count` / `exists`). Adds the CTE wrapper transparently when `#recursiveCte` is set
+
+### Recursive tree traversal
+- `QueryBuilder.descendants({ via })` and `QueryBuilder.ancestors({ via })` walk a self-referential edge via `WITH RECURSIVE`. The current scope's predicates seed the anchor; the same predicates propagate to every recursive level *except* clauses that filter on the join columns themselves (those would prune the walk to the seed)
+- Generic primitive: `QueryBuilder.recursiveOn({ from, to, setSemantics? })`. Each recursive step joins `child.<from> = parent.<to>`. `descendants({ via })` is sugar for `recursiveOn({ from: via, to: <pk> })`; `ancestors({ via })` is sugar for `recursiveOn({ from: <pk>, to: via })`
+- **Cycle safety:** defaults to `UNION` (set semantics) so cycles terminate naturally. Pass `setSemantics: false` for `UNION ALL` if you can guarantee acyclicity
+- **Scope-snapshot semantics:** predicates added *before* `recursiveOn`/`descendants`/`ancestors` bake into the CTE (anchor + step). Predicates added *after* apply to the outer `SELECT * FROM __traversal` only — so `Page.where({ id: root }).descendants({ via: "parentId" }).where({ title: "foo" }).count()` walks all descendants and then filters by title, rather than pruning the walk
+- **`whereRaw` propagation:** `whereRaw` clauses (used by `kept()`) are opaque to the column tracker and always propagate to the recursive step — so `Page.kept().descendants(...)` correctly excludes discarded rows AND blocks subtree traversal through them
+- **v1 limitations:** seed scope cannot have `order/limit/offset` (throws — apply ordering after the recursive scope), no nested `recursiveOn`, no `joins()` on the seed scope, single-column primary key required for `descendants`/`ancestors` sugar, `updateAll`/`deleteAll`/`discardAll`/`undiscardAll` throw on a recursive scope
+- Composes with everything that comes after: `.where`, `.order`, `.limit`, `.toArray`, `.pluck`, `.count`, `.distinct`, `.includes`
 
 ### Soft deletes (discard pattern)
 - Opt-in via `static softDelete = true` on the model class. Follows the Ruby `discard` gem pattern, NOT the `paranoia` pattern

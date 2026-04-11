@@ -264,6 +264,13 @@ await User.where({ active: false }).deleteAll();
 
 // Raw SQL fragments
 await User.whereRaw('"age" > $1', [18]).order({ name: "ASC" });
+
+// Pluck raw column values (no model hydration)
+const emails = await User.where({ active: true }).pluck("email"); // string[]
+const rows = await User.pluck("id", "email");                     // [string, string][]
+
+// Distinct
+const userIds = await Post.distinct().pluck("userId");
 ```
 
 ### Associations
@@ -295,6 +302,42 @@ const users = await User.all()
 // users[0].posts[0].comments — loaded in one query per level
 // users[0].posts[0].author   — also loaded
 ```
+
+### Recursive tree traversal
+
+For self-referential tables (e.g. a `pages` table with `parent_id`), `descendants()` and `ancestors()` walk the tree using a recursive CTE. The current scope's predicates seed the anchor and propagate to every recursive level:
+
+```ts
+// Walk down from a root page
+const subtreeIds = await Page.where({ id: rootId })
+  .descendants({ via: "parentId" })
+  .pluck("id");
+
+// Walk up from a leaf
+const chainIds = await Page.where({ id: leafId })
+  .ancestors({ via: "parentId" })
+  .pluck("id");
+
+// Scope predicates propagate at every level — multi-tenant safe
+const orgSubtree = await Page.kept()
+  .where({ orgId: tenant.id, id: rootId })
+  .descendants({ via: "parentId" })
+  .toArray();
+
+// Predicates added AFTER the recursive call apply to the outer query —
+// they filter the result without pruning the walk
+const matchingDescendants = await Page.where({ id: rootId })
+  .descendants({ via: "parentId" })
+  .where({ title: "TODO" })
+  .count();
+```
+
+Notes:
+
+- **Cycle safety:** uses `UNION` (set semantics) by default — cycles terminate naturally. Pass `setSemantics: false` to `recursiveOn` for `UNION ALL` if you can guarantee acyclicity.
+- **Soft delete:** `Page.kept().descendants(...)` filters discarded rows AND blocks subtree traversal through them — a discarded mid-tree row hides its subtree from the walk.
+- **Generic primitive:** `recursiveOn({ from, to })` is the underlying primitive. `descendants({ via })` is sugar for `recursiveOn({ from: via, to: <pk> })`; `ancestors({ via })` is sugar for `recursiveOn({ from: <pk>, to: via })`. Use `recursiveOn` directly for non-tree edges.
+- **Limitations:** the seed scope cannot have `order/limit/offset` (apply ordering after the recursive scope), `descendants`/`ancestors` require a single-column primary key, and `updateAll`/`deleteAll`/`discardAll` are not supported on a recursive scope.
 
 ### Dirty tracking
 

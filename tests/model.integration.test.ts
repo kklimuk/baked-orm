@@ -509,6 +509,74 @@ describe("QueryBuilder", () => {
 	});
 });
 
+describe("pluck and distinct", () => {
+	test("pluck returns single column as flat array", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+		const emails = await User.all().order({ email: "ASC" }).pluck("email");
+		expect(emails).toEqual(["alice@test.com", "bob@test.com"]);
+	});
+
+	test("pluck respects where", async () => {
+		const alice = await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+		const ids = await User.where({ name: "Alice" }).pluck("id");
+		expect(ids).toEqual([alice.id]);
+	});
+
+	test("pluck with multiple columns returns tuples", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+		const rows = await User.all()
+			.order({ email: "ASC" })
+			.pluck("name", "email");
+		expect(rows).toEqual([
+			["Alice", "alice@test.com"],
+			["Bob", "bob@test.com"],
+		]);
+	});
+
+	test("pluck on empty result returns []", async () => {
+		const ids = await User.where({ name: "nobody" }).pluck("id");
+		expect(ids).toEqual([]);
+	});
+
+	test("pluck respects order and limit", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+		await User.create({ name: "Carol", email: "carol@test.com" });
+		const names = await User.all()
+			.order({ name: "ASC" })
+			.limit(2)
+			.pluck("name");
+		expect(names).toEqual(["Alice", "Bob"]);
+	});
+
+	test("distinct deduplicates rows", async () => {
+		const alice = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		const bob = await User.create({ name: "Bob", email: "bob@test.com" });
+		await Post.create({ userId: alice.id, title: "P1", body: null });
+		await Post.create({ userId: alice.id, title: "P2", body: null });
+		await Post.create({ userId: bob.id, title: "P3", body: null });
+
+		const userIds = await Post.all().distinct().pluck("userId");
+		expect(userIds.sort()).toEqual([alice.id, bob.id].sort());
+	});
+
+	test("pluck snake_case columns map back to camelCase by db column", async () => {
+		const alice = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+		await Post.create({ userId: alice.id, title: "P1", body: null });
+		const userIds = await Post.all().pluck("userId");
+		expect(userIds).toEqual([alice.id]);
+	});
+});
+
 describe("Transactions", () => {
 	test("transaction commits on success", async () => {
 		await transaction(async () => {

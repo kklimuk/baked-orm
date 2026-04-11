@@ -1,5 +1,10 @@
 import type { TableDefinition } from "../types";
 import { getModelConnection } from "./connection";
+import {
+	buildKnownColumnNames,
+	renumberParameters,
+	requalifyFragment,
+} from "./recursive";
 import type { OrderDirection } from "./types";
 import {
 	buildReverseColumnMap,
@@ -14,11 +19,36 @@ import {
 type WhereClause = {
 	fragment: string;
 	values: unknown[];
+	/**
+	 * DB column names referenced by this clause, or `null` for opaque
+	 * `whereRaw` fragments. Used by recursive CTE rendering to decide which
+	 * predicates to omit from the recursive step.
+	 */
+	columnNames: string[] | null;
 };
 
 type OrderClause = {
 	column: string;
 	direction: OrderDirection;
+};
+
+type Projection =
+	| { kind: "default" }
+	| { kind: "columns"; dbColumns: string[] }
+	| { kind: "count" }
+	| { kind: "exists" };
+
+type CapturedRecursive = {
+	whereClauses: WhereClause[];
+	fromDbColumn: string;
+	toDbColumn: string;
+	setSemantics: boolean;
+};
+
+type RenderOptions = {
+	fromClause: string;
+	starColumn: string;
+	paramOffset: number;
 };
 
 export class QueryBuilder<Row> {
@@ -33,6 +63,8 @@ export class QueryBuilder<Row> {
 	readonly #includedAssociations: string[];
 	readonly #modelClass: (new (attributes?: Partial<Row>) => Row) | null;
 	readonly #sensitiveColumns: Set<string>;
+	readonly #distinctValue: boolean;
+	readonly #recursiveCte: CapturedRecursive | null;
 
 	constructor(
 		tableDefinition: TableDefinition<Row>,
@@ -46,6 +78,8 @@ export class QueryBuilder<Row> {
 			includedAssociations?: string[];
 			modelClass?: (new (attributes?: Partial<Row>) => Row) | null;
 			reverseMap?: Map<string, string>;
+			distinctValue?: boolean;
+			recursiveCte?: CapturedRecursive | null;
 		},
 	) {
 		this.#tableDefinition = tableDefinition;
@@ -62,6 +96,8 @@ export class QueryBuilder<Row> {
 		this.#sensitiveColumns = options?.modelClass
 			? buildSensitiveColumns(options.modelClass, tableDefinition.columns)
 			: new Set();
+		this.#distinctValue = options?.distinctValue ?? false;
+		this.#recursiveCte = options?.recursiveCte ?? null;
 	}
 
 	#clone(overrides: {
@@ -72,6 +108,8 @@ export class QueryBuilder<Row> {
 		selectColumns?: string[];
 		joinClauses?: string[];
 		includedAssociations?: string[];
+		distinctValue?: boolean;
+		recursiveCte?: CapturedRecursive | null;
 	}): QueryBuilder<Row> {
 		return new QueryBuilder(this.#tableDefinition, {
 			whereClauses: overrides.whereClauses ?? this.#whereClauses,
@@ -86,13 +124,20 @@ export class QueryBuilder<Row> {
 				overrides.includedAssociations ?? this.#includedAssociations,
 			modelClass: this.#modelClass,
 			reverseMap: this.#reverseMap,
+			distinctValue:
+				"distinctValue" in overrides
+					? overrides.distinctValue
+					: this.#distinctValue,
+			recursiveCte:
+				"recursiveCte" in overrides
+					? overrides.recursiveCte
+					: this.#recursiveCte,
 		});
 	}
 
 	where(conditions: Partial<Row>): QueryBuilder<Row> {
 		const columns = this.#tableDefinition.columns;
-		const fragments: string[] = [];
-		const values: unknown[] = [];
+		const newClauses: WhereClause[] = [];
 		let paramIndex =
 			this.#whereClauses.reduce(
 				(count, clause) => count + clause.values.length,
@@ -103,27 +148,27 @@ export class QueryBuilder<Row> {
 			conditions as Record<string, unknown>,
 		)) {
 			const dbColumn = resolveColumnName(key, columns);
+			let fragment: string;
+			const clauseValues: unknown[] = [];
 			if (value === null || value === undefined) {
-				fragments.push(`${quoteIdentifier(dbColumn)} IS NULL`);
+				fragment = `${quoteIdentifier(dbColumn)} IS NULL`;
 			} else if (Array.isArray(value)) {
 				const placeholders = value.map(() => `$${paramIndex++}`);
-				fragments.push(
-					`${quoteIdentifier(dbColumn)} IN (${placeholders.join(", ")})`,
-				);
-				values.push(...value);
+				fragment = `${quoteIdentifier(dbColumn)} IN (${placeholders.join(", ")})`;
+				clauseValues.push(...value);
 			} else {
-				fragments.push(`${quoteIdentifier(dbColumn)} = $${paramIndex++}`);
-				values.push(value);
+				fragment = `${quoteIdentifier(dbColumn)} = $${paramIndex++}`;
+				clauseValues.push(value);
 			}
+			newClauses.push({
+				fragment,
+				values: clauseValues,
+				columnNames: [dbColumn],
+			});
 		}
 
-		const clause: WhereClause = {
-			fragment: fragments.join(" AND "),
-			values,
-		};
-
 		return this.#clone({
-			whereClauses: [...this.#whereClauses, clause],
+			whereClauses: [...this.#whereClauses, ...newClauses],
 		});
 	}
 
@@ -144,7 +189,11 @@ export class QueryBuilder<Row> {
 		return this.#clone({
 			whereClauses: [
 				...this.#whereClauses,
-				{ fragment: renumberedFragment, values: values ?? [] },
+				{
+					fragment: renumberedFragment,
+					values: values ?? [],
+					columnNames: null,
+				},
 			],
 		});
 	}
@@ -197,6 +246,95 @@ export class QueryBuilder<Row> {
 		});
 	}
 
+	distinct(): QueryBuilder<Row> {
+		return this.#clone({ distinctValue: true });
+	}
+
+	#assertNoRecursiveCte(operation: string): void {
+		if (this.#recursiveCte) {
+			throw new Error(
+				`Cannot call ${operation}() on a recursive query. Run the recursive scope to a result set first.`,
+			);
+		}
+	}
+
+	recursiveOn(options: {
+		from: keyof Row & string;
+		to: keyof Row & string;
+		setSemantics?: boolean;
+	}): QueryBuilder<Row> {
+		if (this.#recursiveCte) {
+			throw new Error(
+				"recursiveOn() cannot be nested — this query already has a recursive CTE applied",
+			);
+		}
+		if (this.#joinClauses.length > 0) {
+			throw new Error(
+				"recursiveOn() cannot be combined with joins() — apply joins after the recursive scope",
+			);
+		}
+		if (
+			this.#orderClauses.length > 0 ||
+			this.#limitValue !== null ||
+			this.#offsetValue !== null
+		) {
+			throw new Error(
+				"recursiveOn() cannot be combined with order/limit/offset on the seed scope — apply ordering after the recursive scope",
+			);
+		}
+
+		const columns = this.#tableDefinition.columns;
+		const fromDbColumn = resolveColumnName(options.from, columns);
+		const toDbColumn = resolveColumnName(options.to, columns);
+
+		const captured: CapturedRecursive = {
+			whereClauses: this.#whereClauses,
+			fromDbColumn,
+			toDbColumn,
+			setSemantics: options.setSemantics ?? true,
+		};
+
+		return new QueryBuilder<Row>(this.#tableDefinition, {
+			whereClauses: [],
+			orderClauses: [],
+			limitValue: null,
+			offsetValue: null,
+			selectColumns: this.#selectColumns,
+			joinClauses: [],
+			includedAssociations: this.#includedAssociations,
+			modelClass: this.#modelClass,
+			reverseMap: this.#reverseMap,
+			distinctValue: this.#distinctValue,
+			recursiveCte: captured,
+		});
+	}
+
+	descendants(options: { via: keyof Row & string }): QueryBuilder<Row> {
+		const primaryKey = this.#tableDefinition.primaryKey;
+		if (primaryKey.length !== 1) {
+			throw new Error(
+				"descendants() requires a single-column primary key on the table",
+			);
+		}
+		return this.recursiveOn({
+			from: options.via,
+			to: primaryKey[0] as keyof Row & string,
+		});
+	}
+
+	ancestors(options: { via: keyof Row & string }): QueryBuilder<Row> {
+		const primaryKey = this.#tableDefinition.primaryKey;
+		if (primaryKey.length !== 1) {
+			throw new Error(
+				"ancestors() requires a single-column primary key on the table",
+			);
+		}
+		return this.recursiveOn({
+			from: primaryKey[0] as keyof Row & string,
+			to: options.via,
+		});
+	}
+
 	#appendJoins(text: string): string {
 		for (const joinClause of this.#joinClauses) {
 			text += ` ${joinClause}`;
@@ -204,13 +342,17 @@ export class QueryBuilder<Row> {
 		return text;
 	}
 
-	#appendWhere(text: string): { text: string; values: unknown[] } {
+	#appendWhere(
+		text: string,
+		paramOffset: number,
+	): { text: string; values: unknown[] } {
 		const values: unknown[] = [];
 		if (this.#whereClauses.length > 0) {
-			const whereFragments = this.#whereClauses.map(
-				(clause) => clause.fragment,
-			);
-			text += ` WHERE ${whereFragments.join(" AND ")}`;
+			const joined = this.#whereClauses
+				.map((clause) => clause.fragment)
+				.join(" AND ");
+			const renumbered = renumberParameters(joined, paramOffset);
+			text += ` WHERE ${renumbered}`;
 			for (const clause of this.#whereClauses) {
 				values.push(...clause.values);
 			}
@@ -218,34 +360,162 @@ export class QueryBuilder<Row> {
 		return { text, values };
 	}
 
-	toSQL(): { text: string; values: unknown[] } {
-		const tableName = this.#tableDefinition.tableName;
-		const columns =
-			this.#selectColumns.length > 0
-				? this.#selectColumns.map(quoteIdentifier).join(", ")
-				: `${quoteIdentifier(tableName)}.*`;
+	#renderSelect(
+		projection: Projection,
+		options: RenderOptions,
+	): { text: string; values: unknown[] } {
+		let columnsClause: string;
+		switch (projection.kind) {
+			case "default":
+				columnsClause =
+					this.#selectColumns.length > 0
+						? this.#selectColumns.map(quoteIdentifier).join(", ")
+						: options.starColumn;
+				break;
+			case "columns":
+				columnsClause = projection.dbColumns.map(quoteIdentifier).join(", ");
+				break;
+			case "count":
+				columnsClause = "COUNT(*) AS count";
+				break;
+			case "exists":
+				columnsClause = "1";
+				break;
+		}
 
-		let selectText = `SELECT ${columns} FROM ${quoteIdentifier(tableName)}`;
-		selectText = this.#appendJoins(selectText);
-		const { text: withWhere, values } = this.#appendWhere(selectText);
-		let text = withWhere;
+		const supportsDistinct =
+			projection.kind === "default" || projection.kind === "columns";
+		const distinctClause =
+			this.#distinctValue && supportsDistinct ? "DISTINCT " : "";
 
-		if (this.#orderClauses.length > 0) {
+		let text = `SELECT ${distinctClause}${columnsClause} FROM ${options.fromClause}`;
+		text = this.#appendJoins(text);
+		const { text: withWhere, values } = this.#appendWhere(
+			text,
+			options.paramOffset,
+		);
+		text = withWhere;
+
+		const supportsOrdering =
+			projection.kind === "default" || projection.kind === "columns";
+
+		if (supportsOrdering && this.#orderClauses.length > 0) {
 			const orderParts = this.#orderClauses.map(
 				(clause) => `${quoteIdentifier(clause.column)} ${clause.direction}`,
 			);
 			text += ` ORDER BY ${orderParts.join(", ")}`;
 		}
 
-		if (this.#limitValue !== null) {
+		if (supportsOrdering && this.#limitValue !== null) {
 			text += ` LIMIT ${this.#limitValue}`;
 		}
 
-		if (this.#offsetValue !== null) {
+		if (supportsOrdering && this.#offsetValue !== null) {
 			text += ` OFFSET ${this.#offsetValue}`;
 		}
 
+		if (projection.kind === "exists") {
+			text += " LIMIT 1";
+		}
+
 		return { text, values };
+	}
+
+	#buildCte(captured: CapturedRecursive): {
+		text: string;
+		values: unknown[];
+	} {
+		const tableName = this.#tableDefinition.tableName;
+		const knownColumns = buildKnownColumnNames(this.#tableDefinition.columns);
+		const joinColumns = new Set([captured.fromDbColumn, captured.toDbColumn]);
+
+		// Anchor: SELECT "<table>".* FROM "<table>" [WHERE all_captured_where]
+		let anchorText = `SELECT ${quoteIdentifier(tableName)}.* FROM ${quoteIdentifier(tableName)}`;
+		const anchorValues: unknown[] = [];
+		if (captured.whereClauses.length > 0) {
+			const joined = captured.whereClauses
+				.map((clause) => clause.fragment)
+				.join(" AND ");
+			anchorText += ` WHERE ${joined}`;
+			for (const clause of captured.whereClauses) {
+				anchorValues.push(...clause.values);
+			}
+		}
+
+		// Step: SELECT "child".* FROM "<table>" "child"
+		//       INNER JOIN __traversal "parent" ON "child"."<from>" = "parent"."<to>"
+		//       [WHERE propagating_where_clauses requalified+renumbered]
+		//
+		// We omit clauses that filter on the join columns themselves — those
+		// only seed the anchor; if propagated to the step they would prune the
+		// recursion. `whereRaw` clauses (columnNames === null) always propagate.
+		const childAlias = "child";
+		const parentAlias = "parent";
+		let stepText = `SELECT ${quoteIdentifier(childAlias)}.* FROM ${quoteIdentifier(tableName)} ${quoteIdentifier(childAlias)} INNER JOIN __traversal ${quoteIdentifier(parentAlias)} ON ${quoteIdentifier(childAlias)}.${quoteIdentifier(captured.fromDbColumn)} = ${quoteIdentifier(parentAlias)}.${quoteIdentifier(captured.toDbColumn)}`;
+		const stepValues: unknown[] = [];
+		const stepFragments: string[] = [];
+		let originalParamIndex = 1; // position in anchor (full) numbering
+		let stepParamIndex = anchorValues.length + 1; // position in combined values
+
+		for (const clause of captured.whereClauses) {
+			const clauseLength = clause.values.length;
+			const referencesJoinColumn =
+				clause.columnNames?.some((column) => joinColumns.has(column)) ?? false;
+
+			if (!referencesJoinColumn) {
+				const shift = stepParamIndex - originalParamIndex;
+				const renumbered =
+					shift === 0
+						? clause.fragment
+						: clause.fragment.replace(
+								/\$(\d+)/g,
+								(_, num) => `$${Number(num) + shift}`,
+							);
+				const requalified = requalifyFragment(
+					renumbered,
+					childAlias,
+					knownColumns,
+				);
+				stepFragments.push(requalified);
+				stepValues.push(...clause.values);
+				stepParamIndex += clauseLength;
+			}
+
+			originalParamIndex += clauseLength;
+		}
+
+		if (stepFragments.length > 0) {
+			stepText += ` WHERE ${stepFragments.join(" AND ")}`;
+		}
+
+		const setOperator = captured.setSemantics ? "UNION" : "UNION ALL";
+		const text = `WITH RECURSIVE __traversal AS (${anchorText} ${setOperator} ${stepText})`;
+		return { text, values: [...anchorValues, ...stepValues] };
+	}
+
+	#buildSql(projection: Projection): { text: string; values: unknown[] } {
+		const tableName = this.#tableDefinition.tableName;
+		if (!this.#recursiveCte) {
+			return this.#renderSelect(projection, {
+				fromClause: quoteIdentifier(tableName),
+				starColumn: `${quoteIdentifier(tableName)}.*`,
+				paramOffset: 0,
+			});
+		}
+		const cte = this.#buildCte(this.#recursiveCte);
+		const outer = this.#renderSelect(projection, {
+			fromClause: "__traversal",
+			starColumn: "__traversal.*",
+			paramOffset: cte.values.length,
+		});
+		return {
+			text: `${cte.text} ${outer.text}`,
+			values: [...cte.values, ...outer.values],
+		};
+	}
+
+	toSQL(): { text: string; values: unknown[] } {
+		return this.#buildSql({ kind: "default" });
 	}
 
 	async toArray(): Promise<Row[]> {
@@ -307,11 +577,7 @@ export class QueryBuilder<Row> {
 	}
 
 	async count(): Promise<number> {
-		const tableName = this.#tableDefinition.tableName;
-		let countText = `SELECT COUNT(*) AS count FROM ${quoteIdentifier(tableName)}`;
-		countText = this.#appendJoins(countText);
-		const { text, values } = this.#appendWhere(countText);
-
+		const { text, values } = this.#buildSql({ kind: "count" });
 		const connection = getModelConnection();
 		const rows = await executeQuery(
 			connection,
@@ -324,12 +590,7 @@ export class QueryBuilder<Row> {
 	}
 
 	async exists(): Promise<boolean> {
-		const tableName = this.#tableDefinition.tableName;
-		let existsText = `SELECT 1 FROM ${quoteIdentifier(tableName)}`;
-		existsText = this.#appendJoins(existsText);
-		const { text: withWhere, values } = this.#appendWhere(existsText);
-		const text = `${withWhere} LIMIT 1`;
-
+		const { text, values } = this.#buildSql({ kind: "exists" });
 		const connection = getModelConnection();
 		const rows = await executeQuery(
 			connection,
@@ -340,7 +601,49 @@ export class QueryBuilder<Row> {
 		return rows.length > 0;
 	}
 
+	async pluck<Column extends keyof Row & string>(
+		column: Column,
+	): Promise<Row[Column][]>;
+	async pluck<Columns extends readonly (keyof Row & string)[]>(
+		...columns: Columns
+	): Promise<
+		{
+			[Index in keyof Columns]: Columns[Index] extends keyof Row
+				? Row[Columns[Index]]
+				: never;
+		}[]
+	>;
+	async pluck(...columns: (keyof Row & string)[]): Promise<unknown[]> {
+		if (columns.length === 0) {
+			throw new Error("pluck() requires at least one column");
+		}
+		const tableColumns = this.#tableDefinition.columns;
+		const dbColumns = columns.map((column) =>
+			resolveColumnName(column, tableColumns),
+		);
+		const { text, values } = this.#buildSql({
+			kind: "columns",
+			dbColumns,
+		});
+		const connection = getModelConnection();
+		const rows = await executeQuery(
+			connection,
+			text,
+			values,
+			this.#sensitiveColumns,
+		);
+
+		if (columns.length === 1) {
+			const dbColumn = dbColumns[0] as string;
+			return (rows as Record<string, unknown>[]).map((row) => row[dbColumn]);
+		}
+		return (rows as Record<string, unknown>[]).map((row) =>
+			dbColumns.map((dbColumn) => row[dbColumn]),
+		);
+	}
+
 	async updateAll(attributes: Partial<Row>): Promise<number> {
+		this.#assertNoRecursiveCte("updateAll");
 		const columns = this.#tableDefinition.columns;
 		const tableName = this.#tableDefinition.tableName;
 		const setClauses: string[] = [];
@@ -381,9 +684,10 @@ export class QueryBuilder<Row> {
 	}
 
 	async deleteAll(): Promise<number> {
+		this.#assertNoRecursiveCte("deleteAll");
 		const tableName = this.#tableDefinition.tableName;
 		const deleteText = `DELETE FROM ${quoteIdentifier(tableName)}`;
-		const { text, values } = this.#appendWhere(deleteText);
+		const { text, values } = this.#appendWhere(deleteText, 0);
 
 		const connection = getModelConnection();
 		const result = await executeQuery(
@@ -408,10 +712,11 @@ export class QueryBuilder<Row> {
 	}
 
 	async discardAll(): Promise<number> {
+		this.#assertNoRecursiveCte("discardAll");
 		const columnName = this.#resolveDiscardedAtColumn();
 		const tableName = this.#tableDefinition.tableName;
 		const updateText = `UPDATE ${quoteIdentifier(tableName)} SET ${quoteIdentifier(columnName)} = now()`;
-		const { text, values } = this.#appendWhere(updateText);
+		const { text, values } = this.#appendWhere(updateText, 0);
 
 		const connection = getModelConnection();
 		const result = await executeQuery(
@@ -424,10 +729,11 @@ export class QueryBuilder<Row> {
 	}
 
 	async undiscardAll(): Promise<number> {
+		this.#assertNoRecursiveCte("undiscardAll");
 		const columnName = this.#resolveDiscardedAtColumn();
 		const tableName = this.#tableDefinition.tableName;
 		const updateText = `UPDATE ${quoteIdentifier(tableName)} SET ${quoteIdentifier(columnName)} = NULL`;
-		const { text, values } = this.#appendWhere(updateText);
+		const { text, values } = this.#appendWhere(updateText, 0);
 
 		const connection = getModelConnection();
 		const result = await executeQuery(
