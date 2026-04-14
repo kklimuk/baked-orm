@@ -1,6 +1,7 @@
 import type { TableDefinition } from "../types";
 import type { ValidationErrors } from "./errors";
 import type { QueryBuilder } from "./query";
+import type { WhereConditions } from "./where";
 
 export class RecordNotFoundError extends Error {
 	modelName: string;
@@ -247,7 +248,7 @@ export interface ModelStatic<Row> {
 
 	where<Self extends ModelStatic<Row>>(
 		this: Self,
-		conditions: Partial<Row>,
+		conditions: WhereConditions<Row>,
 	): QueryBuilder<InstanceType<Self>>;
 	whereRaw<Self extends ModelStatic<Row>>(
 		this: Self,
@@ -279,7 +280,7 @@ export interface ModelStatic<Row> {
 	): Promise<InstanceType<Self>>;
 	findBy<Self extends ModelStatic<Row>>(
 		this: Self,
-		conditions: Partial<Row>,
+		conditions: WhereConditions<Row>,
 	): Promise<InstanceType<Self> | null>;
 	first<Self extends ModelStatic<Row>>(
 		this: Self,
@@ -288,7 +289,7 @@ export interface ModelStatic<Row> {
 		this: Self,
 	): Promise<InstanceType<Self> | null>;
 	count(): Promise<number>;
-	exists(conditions?: Partial<Row>): Promise<boolean>;
+	exists(conditions?: WhereConditions<Row>): Promise<boolean>;
 
 	create<Self extends ModelStatic<Row>>(
 		this: Self,

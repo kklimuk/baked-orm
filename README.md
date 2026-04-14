@@ -273,6 +273,75 @@ const rows = await User.pluck("id", "email");                     // [string, st
 const userIds = await Post.distinct().pluck("userId");
 ```
 
+#### where() — operators and grouping
+
+`where()` accepts a scalar (equality), an array (`IN`), `null` (`IS NULL`), or an operator record `{ eq, ne, gt, ... }`. Multiple operators on the same column AND together. Top-level keys are joined with AND; nest `or:` / `and:` for arbitrary groupings.
+
+```ts
+// Scalar equality, null, and IN — all type-safe
+await User.where({ name: "Alice" });
+await User.where({ deletedAt: null });
+await User.where({ id: ["a", "b", "c"] });   // string[] — no casts
+
+// Comparison operators
+await User.where({ age: { gte: 18 } });
+await User.where({ createdAt: { lt: cutoff } });
+
+// Range query — multiple operators AND on one column
+await User.where({ age: { gte: 18, lte: 65 } });
+
+// IN / NOT IN
+await User.where({ id: { in: ["a", "b"] } });
+await User.where({ status: { not_in: ["deleted", "banned"] } });
+
+// String matching
+await User.where({ email: { ilike: "%@example.com" } });
+await User.where({ name: { contains: "ali" } });        // → LIKE %ali%
+await User.where({ name: { starts_with: "Al" } });      // → LIKE Al%
+await User.where({ name: { ends_with: "ce" } });        // → LIKE %ce
+
+// Mixed scalar + operator on the same call (ANDed together)
+await User.where({
+  active: true,
+  age: { gte: 18 },
+  email: { ilike: "%@company.com" },
+});
+
+// OR / AND grouping (arbitrary nesting)
+await User.where({
+  or: [
+    { name: { ilike: "%alice%" } },
+    { email: { ilike: "%alice%" } },
+  ],
+}).limit(20);
+
+// Nested: top-level AND with an OR group
+await User.where({
+  active: true,
+  or: [{ role: "admin" }, { role: "owner" }],
+});
+```
+
+Operator reference:
+
+| Operator | SQL |
+|---|---|
+| `eq` | `=` (or `IS NULL` if value is null) |
+| `ne` | `!=` (or `IS NOT NULL` if value is null) |
+| `gt`, `gte`, `lt`, `lte` | `>`, `>=`, `<`, `<=` |
+| `in` | `IN (...)` — empty array → `FALSE` |
+| `not_in` | `NOT IN (...)` — empty array → `TRUE` |
+| `like`, `ilike` | `LIKE` / `ILIKE` (case-insensitive) — wildcards passed through |
+| `contains`, `starts_with`, `ends_with` | Sugar over `LIKE` that wraps the value with `%` |
+
+Range operators (`gt`/`gte`/`lt`/`lte`) and string operators (`like`/`ilike`/`contains`/`starts_with`/`ends_with`) are statically constrained by the column's TypeScript type — `where({ active: { ilike: "x" } })` fails to typecheck on a boolean column.
+
+JSON/JSONB columns: an object value is always treated as a literal, never an operator record — so `where({ metadata: { eq: 5 } })` on a JSONB column inserts that object as the bound value.
+
+Timestamp columns: equality operators (`=`, `!=`, `IN`, `NOT IN`) on `timestamptz`/`timestamp` columns automatically truncate to millisecond precision via `date_trunc('milliseconds', col)`, so JS `Date` values round-trip correctly despite PostgreSQL's microsecond storage. Range operators use the bare column for index-friendliness.
+
+Limitation: a column literally named `or` or `and` collides with the grouping keys. Fall back to `whereRaw` for those cases.
+
 ### Associations
 
 Load associations explicitly. Return types are inferred from the model definition:

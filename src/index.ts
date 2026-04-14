@@ -33,6 +33,11 @@ export type {
 } from "./model/validations";
 export { defineValidator, validate, validates } from "./model/validations";
 export type {
+	WhereConditions,
+	WhereOperators,
+	WhereValue,
+} from "./model/where";
+export type {
 	BakedConfig,
 	ColumnDefinition,
 	ForeignKeyDefinition,

@@ -31,6 +31,7 @@ import {
 	resolveColumnName,
 } from "./utils";
 import { collectValidationErrors, type ValidationContext } from "./validations";
+import type { WhereConditions } from "./where";
 
 const MODEL_REGISTRY = new Map<string, AnyModelStatic>();
 
@@ -388,7 +389,7 @@ export function Model<Row>(
 		// --- Class methods ---
 		// Static methods use `this` parameter so `User.find()` returns `Promise<User>`, not `Promise<ModelBase>`
 
-		static where(conditions: Partial<Row>): QueryBuilder<Row> {
+		static where(conditions: WhereConditions<Row>): QueryBuilder<Row> {
 			return new QueryBuilder<Row>(tableDefinition, {
 				modelClass: this as unknown as new (attributes?: Partial<Row>) => Row,
 			}).where(conditions);
@@ -459,7 +460,7 @@ export function Model<Row>(
 
 		static async findBy<Subclass extends typeof ModelBase>(
 			this: Subclass,
-			conditions: Partial<Row>,
+			conditions: WhereConditions<Row>,
 		): Promise<InstanceType<Subclass> | null> {
 			const result = await this.where(conditions).first();
 			return result as InstanceType<Subclass> | null;
@@ -481,7 +482,7 @@ export function Model<Row>(
 			return this.all().count();
 		}
 
-		static async exists(conditions?: Partial<Row>): Promise<boolean> {
+		static async exists(conditions?: WhereConditions<Row>): Promise<boolean> {
 			if (conditions) {
 				return this.where(conditions).exists();
 			}

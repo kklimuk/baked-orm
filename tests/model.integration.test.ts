@@ -1072,3 +1072,231 @@ describe("Dirty tracking", () => {
 		expect(user.changedAttributes()).toEqual({});
 	});
 });
+
+describe("where() operator forms", () => {
+	beforeEach(async () => {
+		await User.createMany([
+			{ name: "Alice", email: "alice@example.com" },
+			{ name: "Bob", email: "bob@example.com" },
+			{ name: "Carol", email: "carol@other.com" },
+			{ name: "Dave", email: "dave@example.com" },
+		]);
+	});
+
+	test("array value emits IN — typecheck-clean without casts", async () => {
+		const ids: string[] = (
+			await User.where({ name: "Alice" }).pluck("id")
+		).concat(await User.where({ name: "Bob" }).pluck("id"));
+		const matched = await User.where({ id: ids }).order({ name: "ASC" });
+		expect(matched.map((user) => user.name)).toEqual(["Alice", "Bob"]);
+	});
+
+	test("empty array IN matches nothing (FALSE)", async () => {
+		const count = await User.where({ id: [] }).count();
+		expect(count).toBe(0);
+	});
+
+	test("eq operator", async () => {
+		const found = await User.where({ name: { eq: "Alice" } }).first();
+		expect(found?.email).toBe("alice@example.com");
+	});
+
+	test("ne operator", async () => {
+		const others = await User.where({ name: { ne: "Alice" } }).order({
+			name: "ASC",
+		});
+		expect(others.map((user) => user.name)).toEqual(["Bob", "Carol", "Dave"]);
+	});
+
+	test("ne operator with null becomes IS NOT NULL", async () => {
+		const alice = await User.findBy({ name: "Alice" });
+		if (!alice) throw new Error("expected Alice to exist");
+		await Post.create({ userId: alice.id, title: "p1", body: "filled" });
+		await Post.create({ userId: alice.id, title: "p2", body: null });
+		const withBody = await Post.where({ body: { ne: null } }).order({
+			title: "ASC",
+		});
+		expect(withBody.map((post) => post.title)).toEqual(["p1"]);
+	});
+
+	test("eq operator with null becomes IS NULL", async () => {
+		const alice = await User.findBy({ name: "Alice" });
+		if (!alice) throw new Error("expected Alice to exist");
+		await Post.create({ userId: alice.id, title: "p1", body: "filled" });
+		await Post.create({ userId: alice.id, title: "p2", body: null });
+		const withoutBody = await Post.where({ body: { eq: null } });
+		expect(withoutBody.map((post) => post.title)).toEqual(["p2"]);
+	});
+
+	test("gt / gte / lt / lte on text comparisons", async () => {
+		const after = await User.where({ name: { gt: "Bob" } }).order({
+			name: "ASC",
+		});
+		expect(after.map((user) => user.name)).toEqual(["Carol", "Dave"]);
+
+		const inclusive = await User.where({ name: { gte: "Bob" } }).order({
+			name: "ASC",
+		});
+		expect(inclusive.map((user) => user.name)).toEqual([
+			"Bob",
+			"Carol",
+			"Dave",
+		]);
+
+		const before = await User.where({ name: { lt: "Carol" } }).order({
+			name: "ASC",
+		});
+		expect(before.map((user) => user.name)).toEqual(["Alice", "Bob"]);
+
+		const beforeInclusive = await User.where({ name: { lte: "Bob" } }).order({
+			name: "ASC",
+		});
+		expect(beforeInclusive.map((user) => user.name)).toEqual(["Alice", "Bob"]);
+	});
+
+	test("multi-operator on same column ANDs (range query)", async () => {
+		const range = await User.where({
+			name: { gte: "B", lt: "D" },
+		}).order({ name: "ASC" });
+		expect(range.map((user) => user.name)).toEqual(["Bob", "Carol"]);
+	});
+
+	test("in / not_in operators", async () => {
+		const matches = await User.where({
+			name: { in: ["Alice", "Carol"] },
+		}).order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Alice", "Carol"]);
+
+		const excluded = await User.where({
+			name: { not_in: ["Alice", "Carol"] },
+		}).order({ name: "ASC" });
+		expect(excluded.map((user) => user.name)).toEqual(["Bob", "Dave"]);
+	});
+
+	test("not_in with empty array matches everything", async () => {
+		const all = await User.where({ id: { not_in: [] } });
+		expect(all).toHaveLength(4);
+	});
+
+	test("like operator", async () => {
+		const matches = await User.where({
+			email: { like: "%@example.com" },
+		}).order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Alice", "Bob", "Dave"]);
+	});
+
+	test("ilike operator (case-insensitive)", async () => {
+		const matches = await User.where({ name: { ilike: "ALICE" } });
+		expect(matches.map((user) => user.name)).toEqual(["Alice"]);
+	});
+
+	test("contains / starts_with / ends_with sugar", async () => {
+		const containing = await User.where({ email: { contains: "ali" } });
+		expect(containing.map((user) => user.name)).toEqual(["Alice"]);
+
+		const starts = await User.where({ name: { starts_with: "Ca" } });
+		expect(starts.map((user) => user.name)).toEqual(["Carol"]);
+
+		const ends = await User.where({ email: { ends_with: "other.com" } });
+		expect(ends.map((user) => user.name)).toEqual(["Carol"]);
+	});
+
+	test("scalar + operator on the same call ANDs them", async () => {
+		const matches = await User.where({
+			name: { gte: "Bob" },
+			email: { ilike: "%@example.com" },
+		}).order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Bob", "Dave"]);
+	});
+
+	test("camelCase column names resolve to snake_case in operators", async () => {
+		const cutoff = new Date(Date.now() - 60_000);
+		const recent = await User.where({ createdAt: { gt: cutoff } });
+		expect(recent.length).toBeGreaterThanOrEqual(4);
+	});
+
+	test("Date equality round-trips on timestamptz columns", async () => {
+		const alice = await User.findBy({ name: "Alice" });
+		if (!alice) throw new Error("expected Alice to exist");
+		const exact = await User.where({ createdAt: alice.createdAt });
+		expect(exact.map((user) => user.name)).toContain("Alice");
+	});
+
+	test("Date IN round-trips on timestamptz columns", async () => {
+		const alice = await User.findBy({ name: "Alice" });
+		if (!alice) throw new Error("expected Alice to exist");
+		const matched = await User.where({
+			createdAt: [alice.createdAt],
+		});
+		expect(matched.map((user) => user.name)).toContain("Alice");
+	});
+
+	test("Date ne operator round-trips on timestamptz columns", async () => {
+		// Insert a user with an explicit distinct created_at so ne can differentiate
+		await connection`
+			INSERT INTO users (id, name, email, created_at)
+			VALUES (gen_random_uuid(), 'Eve', 'eve@example.com', now() + interval '1 hour')
+		`;
+		const eve = await User.findBy({ name: "Eve" });
+		if (!eve) throw new Error("expected Eve to exist");
+		const others = await User.where({
+			createdAt: { ne: eve.createdAt },
+		});
+		expect(others.map((user) => user.name)).not.toContain("Eve");
+		expect(others.length).toBe(4);
+	});
+
+	test("empty operator object on non-JSON column produces no clause", async () => {
+		const all = await User.where({ name: {} });
+		expect(all).toHaveLength(4);
+	});
+
+	test("or grouping joins clauses with OR", async () => {
+		const matches = await User.where({
+			or: [{ name: { ilike: "%alice%" } }, { email: { ilike: "%other.com" } }],
+		}).order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Alice", "Carol"]);
+	});
+
+	test("or with multi-key children", async () => {
+		const matches = await User.where({
+			or: [{ name: "Alice", email: "alice@example.com" }, { name: "Bob" }],
+		}).order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Alice", "Bob"]);
+	});
+
+	test("or with multi-operator child (range inside OR)", async () => {
+		const matches = await User.where({
+			or: [
+				{ name: { gte: "B", lt: "D" } },
+				{ email: { ilike: "%@other.com" } },
+			],
+		}).order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Bob", "Carol"]);
+	});
+
+	test("nested or inside top-level AND keeps param numbering correct", async () => {
+		const matches = await User.where({
+			email: { ilike: "%@example.com" },
+			or: [{ name: "Alice" }, { name: "Dave" }],
+		}).order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Alice", "Dave"]);
+	});
+
+	test("operators compose with whereRaw via consistent param numbering", async () => {
+		const matches = await User.where({ name: { gt: "Bob" } })
+			.whereRaw(`"email" LIKE $1`, ["%example%"])
+			.order({ name: "ASC" });
+		expect(matches.map((user) => user.name)).toEqual(["Dave"]);
+	});
+
+	test("findBy accepts operator forms", async () => {
+		const found = await User.findBy({ name: { ilike: "alice" } });
+		expect(found?.email).toBe("alice@example.com");
+	});
+
+	test("exists accepts operator forms", async () => {
+		expect(await User.exists({ name: { in: ["Alice", "Bob"] } })).toBe(true);
+		expect(await User.exists({ name: { in: ["Nope"] } })).toBe(false);
+	});
+});

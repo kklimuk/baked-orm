@@ -15,6 +15,7 @@ import {
 	quoteIdentifier,
 	resolveColumnName,
 } from "./utils";
+import { compileConditions, type WhereConditions } from "./where";
 
 type WhereClause = {
 	fragment: string;
@@ -135,38 +136,17 @@ export class QueryBuilder<Row> {
 		});
 	}
 
-	where(conditions: Partial<Row>): QueryBuilder<Row> {
-		const columns = this.#tableDefinition.columns;
-		const newClauses: WhereClause[] = [];
-		let paramIndex =
+	where(conditions: WhereConditions<Row>): QueryBuilder<Row> {
+		const startParamIndex =
 			this.#whereClauses.reduce(
 				(count, clause) => count + clause.values.length,
 				0,
 			) + 1;
-
-		for (const [key, value] of Object.entries(
+		const newClauses = compileConditions(
 			conditions as Record<string, unknown>,
-		)) {
-			const dbColumn = resolveColumnName(key, columns);
-			let fragment: string;
-			const clauseValues: unknown[] = [];
-			if (value === null || value === undefined) {
-				fragment = `${quoteIdentifier(dbColumn)} IS NULL`;
-			} else if (Array.isArray(value)) {
-				const placeholders = value.map(() => `$${paramIndex++}`);
-				fragment = `${quoteIdentifier(dbColumn)} IN (${placeholders.join(", ")})`;
-				clauseValues.push(...value);
-			} else {
-				fragment = `${quoteIdentifier(dbColumn)} = $${paramIndex++}`;
-				clauseValues.push(value);
-			}
-			newClauses.push({
-				fragment,
-				values: clauseValues,
-				columnNames: [dbColumn],
-			});
-		}
-
+			this.#tableDefinition.columns,
+			startParamIndex,
+		);
 		return this.#clone({
 			whereClauses: [...this.#whereClauses, ...newClauses],
 		});
