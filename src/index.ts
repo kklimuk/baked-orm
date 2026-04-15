@@ -6,7 +6,12 @@ export type {
 	QueryLogEntry,
 	QueryLogger,
 } from "./model/connection";
-export { connect, disconnect, transaction } from "./model/connection";
+export {
+	connect,
+	disconnect,
+	isInTransaction,
+	transaction,
+} from "./model/connection";
 export { ValidationError, ValidationErrors } from "./model/errors";
 export { QueryBuilder } from "./model/query";
 export type { SerializeOptions } from "./model/serializer";
@@ -15,6 +20,7 @@ export { Snapshot } from "./model/snapshot";
 export type {
 	AssociationDefinition,
 	BaseModel,
+	LockMode,
 	ModelStatic,
 	OrderDirection,
 	UpsertOptions,

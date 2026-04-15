@@ -38,6 +38,10 @@ export async function connect(
 	activeConnection = getConnection(config);
 }
 
+export function isInTransaction(): boolean {
+	return transactionStorage.getStore() !== undefined;
+}
+
 export function getModelConnection(): SQL {
 	const transactionConnection = transactionStorage.getStore();
 	if (transactionConnection) return transactionConnection;

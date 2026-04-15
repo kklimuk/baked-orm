@@ -526,6 +526,55 @@ await transaction(async () => {
 });
 ```
 
+### Pessimistic locking
+
+Lock rows with `SELECT ... FOR UPDATE` to safely perform read-modify-write operations under concurrency:
+
+```ts
+import { transaction } from "baked-orm";
+
+// Instance withLock() — the most ergonomic path
+await account.withLock(async (account) => {
+  account.balance -= 100;
+  await account.save();
+});
+
+// Instance lock() — when you're already in a transaction
+await transaction(async () => {
+  await account.lock();
+  account.balance -= 100;
+  await account.save();
+});
+
+// QueryBuilder lock() — for query chains
+await transaction(async () => {
+  const account = await Account.where({ id: 1 }).lock().first();
+  // row is locked until the transaction commits
+});
+
+// Lock modes
+await account.lock("FOR NO KEY UPDATE");
+await account.lock("FOR SHARE");
+
+// NOWAIT — throw immediately if the row is already locked
+await transaction(async () => {
+  await account.lock("FOR UPDATE NOWAIT");
+});
+
+// SKIP LOCKED — skip locked rows (job queue pattern)
+await transaction(async () => {
+  const jobs = await Job.where({ status: "pending" })
+    .lock("FOR UPDATE SKIP LOCKED")
+    .limit(10)
+    .toArray();
+});
+```
+
+Lock rules:
+- **Requires a transaction** — calling `lock()` outside a transaction throws (the lock would release immediately)
+- **Not allowed on recursive CTEs** — PostgreSQL doesn't support `FOR UPDATE` on CTEs
+- `withLock(callback, mode?)` opens a transaction, locks the record, runs the callback, and returns the result. Rolls back on error
+
 ### Batch processing
 
 Process large tables without loading everything into memory:

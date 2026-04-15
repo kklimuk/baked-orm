@@ -1,6 +1,6 @@
 import type { TableDefinition } from "../types";
 import { runCallbacks } from "./callbacks";
-import { getModelConnection } from "./connection";
+import { getModelConnection, isInTransaction, transaction } from "./connection";
 import { ValidationError, ValidationErrors } from "./errors";
 import { QueryBuilder } from "./query";
 import type { SerializeOptions } from "./serializer";
@@ -360,6 +360,46 @@ export function Model<Row>(
 				Object.assign(this, mapRowToModel(row, reverseMap));
 			}
 			this.#snapshot.capture(this);
+		}
+
+		async lock(mode?: string): Promise<void> {
+			if (this.isNewRecord) {
+				throw new Error(`Cannot lock a new record. Save it first.`);
+			}
+			if (!isInTransaction()) {
+				throw new Error(
+					"lock() requires a transaction — a locked row without a transaction boundary releases immediately. Wrap your call in transaction()",
+				);
+			}
+			const connection = getModelConnection();
+			const sensitiveDbColumns = this.#getSensitiveColumns();
+			const primaryKeyDbColumn = resolveColumnName(primaryKeyField, columns);
+			const lockClause = mode ?? "FOR UPDATE";
+			const text = `SELECT * FROM ${quoteIdentifier(tableName)} WHERE ${quoteIdentifier(primaryKeyDbColumn)} = $1 ${lockClause}`;
+			const rows = await executeQuery(
+				connection,
+				text,
+				[this[primaryKeyField]],
+				sensitiveDbColumns,
+			);
+			const row = rows[0] as Record<string, unknown> | undefined;
+			if (row) {
+				Object.assign(this, mapRowToModel(row, reverseMap));
+			}
+			this.#snapshot.capture(this);
+		}
+
+		async withLock<Result>(
+			callback: (record: this) => Promise<Result>,
+			mode?: string,
+		): Promise<Result> {
+			if (this.isNewRecord) {
+				throw new Error(`Cannot lock a new record. Save it first.`);
+			}
+			return transaction(async () => {
+				await this.lock(mode);
+				return callback(this);
+			});
 		}
 
 		async load(associationName: string): Promise<unknown> {

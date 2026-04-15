@@ -60,9 +60,9 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/model/validations.ts` — `validates()` factory for field-level rules (presence, length, numericality, format, inclusion, exclusion, email), `validate()` for record-level custom validators, `defineValidator()` registry for user-defined validators, `collectValidationErrors()` runner. Enum columns with `enumValues` in their `ColumnDefinition` are auto-validated without explicit `validates("inclusion")` — invalid values produce `"is not a valid value (must be one of: ...)"` errors
 - `src/model/callbacks.ts` — `runCallbacks()` discovers and executes lifecycle callback arrays from static properties on the model class
 - `src/model/errors.ts` — `ValidationError` (thrown by `save()` on failure) and `ValidationErrors` (Rails-like Map-backed error collection with `add`, `get`, `fullMessages`, `fullMessagesFor`, `toJSON`)
-- `src/model/connection.ts` — connection singleton wrapping existing config system. `AsyncLocalStorage` scopes transactions. Supports `onQuery` callback for query logging
+- `src/model/connection.ts` — connection singleton wrapping existing config system. `AsyncLocalStorage` scopes transactions. `isInTransaction()` detects whether code is running inside a transaction. Supports `onQuery` callback for query logging
 - `src/model/utils.ts` — shared utilities: `quoteIdentifier`, `resolveColumnName`, `buildReverseColumnMap`, `mapRowToModel`, `hydrateInstance`, `executeQuery` (with logging + sensitive column redaction), `buildConflictClause`, `buildSensitiveColumns`
-- `src/model/types.ts` — `ModelStatic<Row>`, `BaseModel`, `AnyModelStatic`, `AssociationDefinition`, `RecordNotFoundError`. Also exports branded association types (`HasManyDef`, `HasOneDef`, `BelongsToDef`, `HasManyThroughDef`) and standalone factory functions (`hasMany`, `hasOne`, `belongsTo`, `hasManyThrough`) for the `Model(table, associations)` API. Factory functions accept either string model names (resolved from registry) or thunks (`() => Model`); string overloads take an explicit generic for type inference: `hasMany<Post>("Post")`
+- `src/model/types.ts` — `ModelStatic<Row>`, `BaseModel`, `AnyModelStatic`, `AssociationDefinition`, `RecordNotFoundError`, `LockMode`. Also exports branded association types (`HasManyDef`, `HasOneDef`, `BelongsToDef`, `HasManyThroughDef`) and standalone factory functions (`hasMany`, `hasOne`, `belongsTo`, `hasManyThrough`) for the `Model(table, associations)` API. Factory functions accept either string model names (resolved from registry) or thunks (`() => Model`); string overloads take an explicit generic for type inference: `hasMany<Post>("Post")`
 
 ### Association declaration patterns
 - **Preferred (separate files):** `Model(table, { posts: hasMany<Post>("Post") })` with `import type { Post }` — string-based model refs resolve from the registry at runtime, `import type` avoids circular imports, branded defs + `AssociationProperties` mapped type infer instance types automatically
@@ -100,6 +100,16 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - **`whereRaw` propagation:** `whereRaw` clauses (used by `kept()`) are opaque to the column tracker and always propagate to the recursive step — so `Page.kept().descendants(...)` correctly excludes discarded rows AND blocks subtree traversal through them
 - **v1 limitations:** seed scope cannot have `order/limit/offset` (throws — apply ordering after the recursive scope), no nested `recursiveOn`, no `joins()` on the seed scope, single-column primary key required for `descendants`/`ancestors` sugar, `updateAll`/`deleteAll`/`discardAll`/`undiscardAll` throw on a recursive scope
 - Composes with everything that comes after: `.where`, `.order`, `.limit`, `.toArray`, `.pluck`, `.count`, `.distinct`, `.includes`
+
+### Pessimistic locking
+- `QueryBuilder.lock(mode?)` appends a PostgreSQL lock clause (`FOR UPDATE`, `FOR SHARE`, `FOR NO KEY UPDATE`, `FOR KEY SHARE`) to SELECT queries. Defaults to `FOR UPDATE`. Supports `NOWAIT` and `SKIP LOCKED` suffixes via string passthrough
+- Lock clause is appended after LIMIT/OFFSET in the rendered SQL. Only applied to `default` and `columns` projection kinds — silently ignored on `count()`, `exists()`
+- `lock()` on a recursive CTE scope throws — PostgreSQL does not allow `FOR UPDATE` on CTEs
+- Executing a locked query outside a transaction throws — a lock without a transaction boundary releases immediately, which is a bug, not a feature. Detection via `isInTransaction()` in `connection.ts`
+- Instance `lock(mode?)` method re-SELECTs the record with the lock clause, refreshes all in-memory attributes, and resets the snapshot. Similar to `reload()` but with a lock. Throws if not persisted or not in a transaction
+- Instance `withLock(callback, mode?)` convenience wraps in `transaction()`, calls `this.lock(mode)`, then runs the callback with `this`. Returns the callback's return value. Rolls back on error
+- `LockMode` type union exported from `types.ts` covers all four PostgreSQL lock strengths × {bare, NOWAIT, SKIP LOCKED}
+- `isInTransaction()` exported from `connection.ts` and `src/index.ts` — returns `true` when inside a `transaction()` block
 
 ### Soft deletes (discard pattern)
 - Opt-in via `static softDelete = true` on the model class. Follows the Ruby `discard` gem pattern, NOT the `paranoia` pattern

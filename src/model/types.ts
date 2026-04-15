@@ -17,6 +17,20 @@ export class RecordNotFoundError extends Error {
 
 export type OrderDirection = "ASC" | "DESC";
 
+export type LockMode =
+	| "FOR UPDATE"
+	| "FOR NO KEY UPDATE"
+	| "FOR SHARE"
+	| "FOR KEY SHARE"
+	| "FOR UPDATE NOWAIT"
+	| "FOR NO KEY UPDATE NOWAIT"
+	| "FOR SHARE NOWAIT"
+	| "FOR KEY SHARE NOWAIT"
+	| "FOR UPDATE SKIP LOCKED"
+	| "FOR NO KEY UPDATE SKIP LOCKED"
+	| "FOR SHARE SKIP LOCKED"
+	| "FOR KEY SHARE SKIP LOCKED";
+
 export type AssociationType =
 	| "belongsTo"
 	| "hasOne"
@@ -223,6 +237,11 @@ export interface BaseModel {
 	readonly isDiscarded: boolean;
 	readonly isKept: boolean;
 	reload(): Promise<void>;
+	lock(mode?: LockMode): Promise<void>;
+	withLock<Result>(
+		callback: (record: this) => Promise<Result>,
+		mode?: LockMode,
+	): Promise<Result>;
 	isValid(): Promise<boolean>;
 	changed(fieldName?: string): boolean;
 	changedAttributes(): Record<string, { was: unknown; now: unknown }>;

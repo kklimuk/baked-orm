@@ -1,5 +1,5 @@
 import type { TableDefinition } from "../types";
-import { getModelConnection } from "./connection";
+import { getModelConnection, isInTransaction } from "./connection";
 import {
 	buildKnownColumnNames,
 	renumberParameters,
@@ -71,6 +71,7 @@ export class QueryBuilder<Row> {
 	readonly #sensitiveColumns: Set<string>;
 	readonly #distinctValue: boolean;
 	readonly #recursiveCte: CapturedRecursive | null;
+	readonly #lockClause: string | null;
 
 	constructor(
 		tableDefinition: TableDefinition<Row>,
@@ -86,6 +87,7 @@ export class QueryBuilder<Row> {
 			reverseMap?: Map<string, string>;
 			distinctValue?: boolean;
 			recursiveCte?: CapturedRecursive | null;
+			lockClause?: string | null;
 		},
 	) {
 		this.#tableDefinition = tableDefinition;
@@ -104,6 +106,7 @@ export class QueryBuilder<Row> {
 			: new Set();
 		this.#distinctValue = options?.distinctValue ?? false;
 		this.#recursiveCte = options?.recursiveCte ?? null;
+		this.#lockClause = options?.lockClause ?? null;
 	}
 
 	#clone(overrides: {
@@ -116,6 +119,7 @@ export class QueryBuilder<Row> {
 		includedAssociations?: string[];
 		distinctValue?: boolean;
 		recursiveCte?: CapturedRecursive | null;
+		lockClause?: string | null;
 	}): QueryBuilder<Row> {
 		return new QueryBuilder(this.#tableDefinition, {
 			whereClauses: overrides.whereClauses ?? this.#whereClauses,
@@ -138,6 +142,8 @@ export class QueryBuilder<Row> {
 				"recursiveCte" in overrides
 					? overrides.recursiveCte
 					: this.#recursiveCte,
+			lockClause:
+				"lockClause" in overrides ? overrides.lockClause : this.#lockClause,
 		});
 	}
 
@@ -233,6 +239,15 @@ export class QueryBuilder<Row> {
 
 	distinct(): QueryBuilder<Row> {
 		return this.#clone({ distinctValue: true });
+	}
+
+	lock(mode?: string): QueryBuilder<Row> {
+		if (this.#recursiveCte) {
+			throw new Error(
+				"Cannot use lock() on a recursive query — PostgreSQL does not allow FOR UPDATE on CTEs",
+			);
+		}
+		return this.#clone({ lockClause: mode ?? "FOR UPDATE" });
 	}
 
 	#assertNoRecursiveCte(operation: string): void {
@@ -403,6 +418,13 @@ export class QueryBuilder<Row> {
 			text += " LIMIT 1";
 		}
 
+		if (
+			this.#lockClause &&
+			(projection.kind === "default" || projection.kind === "columns")
+		) {
+			text += ` ${this.#lockClause}`;
+		}
+
 		return { text, values };
 	}
 
@@ -503,7 +525,16 @@ export class QueryBuilder<Row> {
 		return this.#buildSql({ kind: "default" });
 	}
 
+	#assertLockInTransaction(): void {
+		if (this.#lockClause && !isInTransaction()) {
+			throw new Error(
+				"lock() requires a transaction — a locked row without a transaction boundary releases immediately. Wrap your query in transaction()",
+			);
+		}
+	}
+
 	async toArray(): Promise<Row[]> {
+		this.#assertLockInTransaction();
 		const { text, values } = this.toSQL();
 		const connection = getModelConnection();
 		const rows = await executeQuery(
