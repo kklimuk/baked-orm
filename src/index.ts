@@ -10,6 +10,7 @@ export {
 	connect,
 	disconnect,
 	isInTransaction,
+	query,
 	transaction,
 } from "./model/connection";
 export { ValidationError, ValidationErrors } from "./model/errors";

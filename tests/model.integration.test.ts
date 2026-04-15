@@ -10,7 +10,7 @@ import {
 import type { SQL } from "bun";
 
 import { Model } from "../src/model/base";
-import { connect, transaction } from "../src/model/connection";
+import { connect, query, transaction } from "../src/model/connection";
 import { hasMany, RecordNotFoundError } from "../src/model/types";
 import type { TableDefinition } from "../src/types";
 import { getTestConnection, resetDatabase } from "./helpers/postgres";
@@ -1298,5 +1298,120 @@ describe("where() operator forms", () => {
 	test("exists accepts operator forms", async () => {
 		expect(await User.exists({ name: { in: ["Alice", "Bob"] } })).toBe(true);
 		expect(await User.exists({ name: { in: ["Nope"] } })).toBe(false);
+	});
+});
+
+describe("findBySql", () => {
+	test("returns hydrated model instances", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+
+		const users = await User.findBySql("SELECT * FROM users ORDER BY name");
+		expect(users).toHaveLength(2);
+		expect(users[0]?.name).toBe("Alice");
+		expect(users[1]?.name).toBe("Bob");
+		expect(users[0]?.isNewRecord).toBe(false);
+		expect(users[0]).toBeInstanceOf(User);
+	});
+
+	test("supports parameterized queries", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+
+		const users = await User.findBySql("SELECT * FROM users WHERE name = $1", [
+			"Bob",
+		]);
+		expect(users).toHaveLength(1);
+		expect(users[0]?.email).toBe("bob@test.com");
+	});
+
+	test("returns empty array when no rows match", async () => {
+		const users = await User.findBySql("SELECT * FROM users WHERE name = $1", [
+			"nobody",
+		]);
+		expect(users).toEqual([]);
+	});
+
+	test("maps snake_case columns to camelCase fields", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+
+		const users = await User.findBySql("SELECT * FROM users LIMIT 1");
+		expect(users[0]?.createdAt).toBeInstanceOf(Date);
+	});
+
+	test("returned instances support save and dirty tracking", async () => {
+		const created = await User.create({
+			name: "Alice",
+			email: "alice@test.com",
+		});
+
+		const users = await User.findBySql("SELECT * FROM users WHERE id = $1", [
+			created.id,
+		]);
+		const user = users[0];
+		expect(user?.changed()).toBe(false);
+
+		if (user) user.name = "Updated";
+		expect(user?.changed()).toBe(true);
+
+		await user?.save();
+		const reloaded = await User.find(created.id);
+		expect(reloaded.name).toBe("Updated");
+	});
+
+	test("is transaction-aware", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+
+		await transaction(async () => {
+			await User.create({ name: "Bob", email: "bob@test.com" });
+			const users = await User.findBySql("SELECT * FROM users ORDER BY name");
+			expect(users).toHaveLength(2);
+		});
+	});
+});
+
+describe("query", () => {
+	test("returns plain objects", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+
+		const rows = await query("SELECT name, email FROM users");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toEqual({ name: "Alice", email: "alice@test.com" });
+		expect(rows[0]).not.toBeInstanceOf(User);
+	});
+
+	test("supports parameterized queries", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+
+		const rows = await query("SELECT name FROM users WHERE name = $1", ["Bob"]);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toEqual({ name: "Bob" });
+	});
+
+	test("works with GROUP BY and aggregates", async () => {
+		await User.create({ name: "Alice", email: "alice@test.com" });
+		await User.create({ name: "Bob", email: "bob@test.com" });
+
+		type CountResult = { total: string };
+		const rows = await query<CountResult>(
+			"SELECT COUNT(*)::text AS total FROM users",
+		);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.total).toBe("2");
+	});
+
+	test("returns empty array when no rows match", async () => {
+		const rows = await query("SELECT * FROM users WHERE name = $1", ["nobody"]);
+		expect(rows).toEqual([]);
+	});
+
+	test("is transaction-aware", async () => {
+		await transaction(async () => {
+			await User.create({ name: "Alice", email: "alice@test.com" });
+			const rows = await query("SELECT name FROM users");
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toEqual({ name: "Alice" });
+		});
 	});
 });

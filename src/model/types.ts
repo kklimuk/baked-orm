@@ -329,6 +329,11 @@ export interface ModelStatic<Row> {
 		this: Self,
 		conditions: WhereConditions<Row>,
 	): Promise<InstanceType<Self> | null>;
+	findBySql<Self extends ModelStatic<Row>>(
+		this: Self,
+		sqlText: string,
+		values?: unknown[],
+	): Promise<InstanceType<Self>[]>;
 	first<Self extends ModelStatic<Row>>(
 		this: Self,
 	): Promise<InstanceType<Self> | null>;

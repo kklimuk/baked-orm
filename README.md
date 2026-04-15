@@ -592,6 +592,55 @@ Lock rules:
 - **Not allowed on recursive CTEs** — PostgreSQL doesn't support `FOR UPDATE` on CTEs
 - `withLock(callback, mode?)` opens a transaction, locks the record, runs the callback, and returns the result. Rolls back on error
 
+### Raw SQL
+
+#### Model queries — `findBySql`
+
+Execute raw SQL and get back fully hydrated model instances with dirty tracking, `save()`, and all ORM features:
+
+```ts
+// Basic query
+const users = await User.findBySql("SELECT * FROM users WHERE name = $1", ["Alice"]);
+// users: User[] — full model instances
+
+// Complex SQL that the query builder can't express
+const activePosters = await User.findBySql(`
+  SELECT u.* FROM users u
+  JOIN posts p ON p.user_id = u.id
+  GROUP BY u.id
+  HAVING COUNT(p.id) > $1
+`, [5]);
+
+// Returned instances work like any other model
+activePosters[0].name = "Updated";
+await activePosters[0].save();
+```
+
+#### Arbitrary queries — `query<T>()`
+
+Execute raw SQL and get back typed plain objects — for aggregates, groupings, cross-table joins, and anything that doesn't map to a single model:
+
+```ts
+import { query } from "baked-orm";
+
+// Untyped — returns Record<string, unknown>[]
+const departments = await query("SELECT department, COUNT(*) as count FROM users GROUP BY department");
+
+// Typed — returns DeptCount[]
+type DeptCount = { department: string; count: number };
+const deptCounts = await query<DeptCount>(
+  "SELECT department, COUNT(*)::int as count FROM users GROUP BY department"
+);
+
+// Parameterized
+const totals = await query<{ total: number }>(
+  "SELECT COUNT(*)::int as total FROM users WHERE active = $1",
+  [true]
+);
+```
+
+Both `findBySql` and `query` are transaction-aware — they automatically use the current transaction connection when called inside a `transaction()` block.
+
 ### Batch processing
 
 Process large tables without loading everything into memory:

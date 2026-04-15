@@ -585,6 +585,22 @@ export function Model<Row>(
 			return result as InstanceType<Subclass> | null;
 		}
 
+		static async findBySql<Subclass extends typeof ModelBase>(
+			this: Subclass,
+			sqlText: string,
+			values?: unknown[],
+		): Promise<InstanceType<Subclass>[]> {
+			const connection = getModelConnection();
+			const sensitiveDbColumns = buildSensitiveColumns(this, columns);
+			const rows = await executeQuery(
+				connection,
+				sqlText,
+				values,
+				sensitiveDbColumns,
+			);
+			return hydrateRows(this, rows);
+		}
+
 		static async first<Subclass extends typeof ModelBase>(
 			this: Subclass,
 		): Promise<InstanceType<Subclass> | null> {

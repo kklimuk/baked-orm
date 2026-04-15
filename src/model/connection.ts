@@ -70,6 +70,24 @@ export async function transaction<Result>(
 	});
 }
 
+export async function query<Result = Record<string, unknown>>(
+	sqlText: string,
+	values?: unknown[],
+): Promise<Result[]> {
+	const connection = getModelConnection();
+	if (queryLogger) {
+		const start = performance.now();
+		const result = await connection.unsafe(sqlText, values);
+		queryLogger({
+			text: sqlText,
+			values,
+			durationMs: performance.now() - start,
+		});
+		return result as Result[];
+	}
+	return connection.unsafe(sqlText, values) as Promise<Result[]>;
+}
+
 export async function disconnect(): Promise<void> {
 	if (activeConnection) {
 		await activeConnection.close();
