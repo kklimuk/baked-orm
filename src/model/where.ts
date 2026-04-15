@@ -1,5 +1,26 @@
 import type { ColumnDefinition } from "../types";
+import { renumberParameters } from "./recursive";
 import { quoteIdentifier } from "./utils";
+
+/** Symbol used by `QueryBuilder` to expose its SQL for subquery embedding. */
+export const SUBQUERY = Symbol.for("baked-orm.subquery");
+
+export type SubqueryDescriptor = {
+	readonly sql: string;
+	readonly values: readonly unknown[];
+};
+
+function resolveSubquery(value: unknown): SubqueryDescriptor | null {
+	if (
+		typeof value === "object" &&
+		value !== null &&
+		SUBQUERY in value &&
+		typeof (value as Record<symbol, unknown>)[SUBQUERY] === "function"
+	) {
+		return (value as { [SUBQUERY](): SubqueryDescriptor })[SUBQUERY]();
+	}
+	return null;
+}
 
 /**
  * Operator object accepted by `where()` value positions. Multiple operators on
@@ -15,8 +36,8 @@ export type WhereOperators<T> = {
 	gte?: NonNullable<T>;
 	lt?: NonNullable<T>;
 	lte?: NonNullable<T>;
-	in?: ReadonlyArray<NonNullable<T>>;
-	not_in?: ReadonlyArray<NonNullable<T>>;
+	in?: ReadonlyArray<NonNullable<T>> | { [SUBQUERY](): SubqueryDescriptor };
+	not_in?: ReadonlyArray<NonNullable<T>> | { [SUBQUERY](): SubqueryDescriptor };
 } & ([Extract<T, string>] extends [never]
 	? Record<never, never>
 	: {
@@ -27,11 +48,12 @@ export type WhereOperators<T> = {
 			ends_with?: string;
 		});
 
-/** A scalar (equality), an array (IN), or an operator object. */
+/** A scalar (equality), an array (IN), an operator object, or a subquery. */
 export type WhereValue<T> =
 	| T
 	| ReadonlyArray<NonNullable<T>>
-	| WhereOperators<T>;
+	| WhereOperators<T>
+	| { [SUBQUERY](): SubqueryDescriptor };
 
 /**
  * Per-column conditions plus optional `or` / `and` groupings. Top-level keys
@@ -190,6 +212,17 @@ function compileColumnPredicate(
 		};
 	}
 
+	const subquery = resolveSubquery(value);
+	if (subquery) {
+		return buildSubqueryClause(
+			quotedColumn,
+			dbColumn,
+			subquery,
+			startParamIndex,
+			false,
+		);
+	}
+
 	if (Array.isArray(value)) {
 		return buildInClause(eqColumn, dbColumn, value, startParamIndex, false);
 	}
@@ -231,6 +264,38 @@ function buildInClause(
 	return {
 		fragment: `${quotedColumn} ${operator} (${placeholders.join(", ")})`,
 		values: [...values],
+		columnNames: [dbColumn],
+	};
+}
+
+function renderSubqueryFragment(
+	quotedColumn: string,
+	descriptor: SubqueryDescriptor,
+	startParamIndex: number,
+	negated: boolean,
+): { fragment: string; values: unknown[] } {
+	const renumbered = renumberParameters(descriptor.sql, startParamIndex - 1);
+	const operator = negated ? "NOT IN" : "IN";
+	return {
+		fragment: `${quotedColumn} ${operator} (${renumbered})`,
+		values: [...descriptor.values],
+	};
+}
+
+function buildSubqueryClause(
+	quotedColumn: string,
+	dbColumn: string,
+	descriptor: SubqueryDescriptor,
+	startParamIndex: number,
+	negated: boolean,
+): CompiledWhereClause {
+	return {
+		...renderSubqueryFragment(
+			quotedColumn,
+			descriptor,
+			startParamIndex,
+			negated,
+		),
 		columnNames: [dbColumn],
 	};
 }
@@ -316,8 +381,19 @@ function buildSingleOperator(
 				values: [rawValue],
 			};
 		case "in": {
+			const inSubquery = resolveSubquery(rawValue);
+			if (inSubquery) {
+				return renderSubqueryFragment(
+					quotedColumn,
+					inSubquery,
+					startParamIndex,
+					false,
+				);
+			}
 			if (!Array.isArray(rawValue)) {
-				throw new Error('where() operator "in" requires an array value');
+				throw new Error(
+					'where() operator "in" requires an array or subquery value',
+				);
 			}
 			if (rawValue.length === 0) return { fragment: "FALSE", values: [] };
 			let paramIndex = startParamIndex;
@@ -328,8 +404,19 @@ function buildSingleOperator(
 			};
 		}
 		case "not_in": {
+			const notInSubquery = resolveSubquery(rawValue);
+			if (notInSubquery) {
+				return renderSubqueryFragment(
+					quotedColumn,
+					notInSubquery,
+					startParamIndex,
+					true,
+				);
+			}
 			if (!Array.isArray(rawValue)) {
-				throw new Error('where() operator "not_in" requires an array value');
+				throw new Error(
+					'where() operator "not_in" requires an array or subquery value',
+				);
 			}
 			if (rawValue.length === 0) return { fragment: "TRUE", values: [] };
 			let paramIndex = startParamIndex;

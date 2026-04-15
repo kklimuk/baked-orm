@@ -342,6 +342,41 @@ Timestamp columns: equality operators (`=`, `!=`, `IN`, `NOT IN`) on `timestampt
 
 Limitation: a column literally named `or` or `and` collides with the grouping keys. Fall back to `whereRaw` for those cases.
 
+#### Subqueries in where()
+
+Pass a `QueryBuilder` directly as a `where()` value to emit an `IN (SELECT ...)` subquery — one roundtrip instead of two:
+
+```ts
+// Default projection → primary key
+const activePosts = await Post.where({ userId: User.where({ active: true }) });
+// → WHERE "user_id" IN (SELECT "id" FROM "users" WHERE "active" = $1)
+
+// Explicit single-column projection
+await Post.where({ userId: User.where({ active: true }).select("id") });
+
+// NOT IN via operator
+await Post.where({ userId: { not_in: User.where({ active: true }) } });
+
+// Composes with or/and groups
+await Post.where({
+  or: [
+    { userId: User.where({ active: true }) },
+    { title: "public" },
+  ],
+});
+
+// Inner scope composes with order/limit/distinct
+await Post.where({
+  userId: User.where({ active: true }).order({ name: "ASC" }).limit(10),
+});
+```
+
+Notes:
+
+- No `.select()` → defaults to primary key (single-PK tables only).
+- `.select()` with >1 column → throws (SQL `IN (SELECT a, b)` is not supported).
+- Recursive CTE scopes cannot be used as subqueries — use `pluck()` to materialize first.
+
 ### Associations
 
 Load associations explicitly. Return types are inferred from the model definition:

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { compileConditions } from "../src/model/where";
+import { compileConditions, SUBQUERY } from "../src/model/where";
 import type { ColumnDefinition } from "../src/types";
 
 const columns: Record<string, ColumnDefinition> = {
@@ -544,6 +544,147 @@ describe("compileConditions — error cases", () => {
 	test("in operator with non-array value throws", () => {
 		expect(() =>
 			compileConditions({ id: { in: "a" } } as never, columns, 1),
-		).toThrow();
+		).toThrow(/array or subquery/);
+	});
+});
+
+describe("compileConditions — subqueries", () => {
+	const subquery = {
+		[SUBQUERY]() {
+			return {
+				sql: `SELECT "id" FROM "users" WHERE "active" = $1`,
+				values: [true],
+			};
+		},
+	};
+
+	test("direct subquery value compiles to col IN (SELECT ...)", () => {
+		const clauses = compileConditions({ id: subquery } as never, columns, 1);
+		expect(clauses).toEqual([
+			{
+				fragment: `"id" IN (SELECT "id" FROM "users" WHERE "active" = $1)`,
+				values: [true],
+				columnNames: ["id"],
+			},
+		]);
+	});
+
+	test("param renumbering when outer query has prior params", () => {
+		const clauses = compileConditions(
+			{ name: "Alice", id: subquery } as never,
+			columns,
+			1,
+		);
+		expect(clauses).toHaveLength(2);
+		expect(clauses[0]).toEqual({
+			fragment: `"name" = $1`,
+			values: ["Alice"],
+			columnNames: ["name"],
+		});
+		expect(clauses[1]).toEqual({
+			fragment: `"id" IN (SELECT "id" FROM "users" WHERE "active" = $2)`,
+			values: [true],
+			columnNames: ["id"],
+		});
+	});
+
+	test("in operator with subquery", () => {
+		const clauses = compileConditions(
+			{ id: { in: subquery } } as never,
+			columns,
+			1,
+		);
+		expect(clauses).toEqual([
+			{
+				fragment: `"id" IN (SELECT "id" FROM "users" WHERE "active" = $1)`,
+				values: [true],
+				columnNames: ["id"],
+			},
+		]);
+	});
+
+	test("not_in operator with subquery", () => {
+		const clauses = compileConditions(
+			{ id: { not_in: subquery } } as never,
+			columns,
+			1,
+		);
+		expect(clauses).toEqual([
+			{
+				fragment: `"id" NOT IN (SELECT "id" FROM "users" WHERE "active" = $1)`,
+				values: [true],
+				columnNames: ["id"],
+			},
+		]);
+	});
+
+	test("timestamp column skips clamping for subquery values", () => {
+		const subq = {
+			[SUBQUERY]() {
+				return {
+					sql: `SELECT "created_at" FROM "events"`,
+					values: [],
+				};
+			},
+		};
+		const clauses = compileConditions({ createdAt: subq } as never, columns, 1);
+		// bare "created_at", not date_trunc(...)
+		expect(clauses[0]?.fragment).toBe(
+			`"created_at" IN (SELECT "created_at" FROM "events")`,
+		);
+	});
+
+	test("subquery inside or group", () => {
+		const clauses = compileConditions(
+			{ or: [{ id: subquery }, { name: "Bob" }] } as never,
+			columns,
+			1,
+		);
+		expect(clauses).toHaveLength(1);
+		expect(clauses[0]?.fragment).toBe(
+			`("id" IN (SELECT "id" FROM "users" WHERE "active" = $1) OR "name" = $2)`,
+		);
+		expect(clauses[0]?.values).toEqual([true, "Bob"]);
+	});
+
+	test("subquery with empty values array", () => {
+		const emptySubquery = {
+			[SUBQUERY]() {
+				return {
+					sql: `SELECT "id" FROM "users"`,
+					values: [],
+				};
+			},
+		};
+		const clauses = compileConditions(
+			{ id: emptySubquery } as never,
+			columns,
+			1,
+		);
+		expect(clauses).toEqual([
+			{
+				fragment: `"id" IN (SELECT "id" FROM "users")`,
+				values: [],
+				columnNames: ["id"],
+			},
+		]);
+	});
+
+	test("mixed in subquery + ne on same column", () => {
+		const clauses = compileConditions(
+			{ id: { in: subquery, ne: "x" } } as never,
+			columns,
+			1,
+		);
+		expect(clauses).toHaveLength(1);
+		expect(clauses[0]?.fragment).toBe(
+			`("id" IN (SELECT "id" FROM "users" WHERE "active" = $1) AND "id" != $2)`,
+		);
+		expect(clauses[0]?.values).toEqual([true, "x"]);
+	});
+
+	test("columnNames tracking for subquery clause", () => {
+		const clauses = compileConditions({ email: subquery } as never, columns, 1);
+		expect(clauses[0]?.columnNames).toEqual(["email"]);
 	});
 });

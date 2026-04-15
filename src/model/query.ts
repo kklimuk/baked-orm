@@ -15,7 +15,12 @@ import {
 	quoteIdentifier,
 	resolveColumnName,
 } from "./utils";
-import { compileConditions, type WhereConditions } from "./where";
+import {
+	compileConditions,
+	SUBQUERY,
+	type SubqueryDescriptor,
+	type WhereConditions,
+} from "./where";
 
 type WhereClause = {
 	fragment: string;
@@ -805,6 +810,45 @@ export class QueryBuilder<Row> {
 		onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
 	): Promise<TResult1 | TResult2> {
 		return this.toArray().then(onfulfilled, onrejected);
+	}
+
+	[SUBQUERY](): SubqueryDescriptor {
+		if (this.#recursiveCte) {
+			throw new Error(
+				"A recursive query cannot be used as a subquery — " +
+					"use pluck() to materialize the result, then pass the array to where()",
+			);
+		}
+
+		let dbColumns: string[];
+		if (this.#selectColumns.length === 0) {
+			const primaryKey = this.#tableDefinition.primaryKey;
+			if (primaryKey.length !== 1) {
+				throw new Error(
+					"Cannot use a query as a subquery without select() on a table " +
+						"with a composite primary key — call .select(column) first",
+				);
+			}
+			dbColumns = [
+				resolveColumnName(
+					primaryKey[0] as keyof Row & string,
+					this.#tableDefinition.columns,
+				),
+			];
+		} else if (this.#selectColumns.length === 1) {
+			dbColumns = this.#selectColumns;
+		} else {
+			throw new Error(
+				"A subquery must project exactly one column — " +
+					"call .select() with a single column",
+			);
+		}
+
+		const { text, values } = this.#buildSql({
+			kind: "columns",
+			dbColumns,
+		});
+		return { sql: text, values };
 	}
 
 	get tableDefinition(): TableDefinition<Row> {
