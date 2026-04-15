@@ -119,10 +119,21 @@ export function mapRowToModel(
 
 export function buildConflictClause(
 	dbColumns: string[],
-	conflictColumnsCamel: string[],
+	conflict: { columns?: string[]; constraint?: string },
 	columns: Record<string, ColumnDefinition>,
-): { conflictClause: string; updateSet: string } {
-	const conflictDbColumns = conflictColumnsCamel.map((key) =>
+): { conflictTarget: string; updateSet: string } {
+	if (conflict.constraint) {
+		const updateClauses = dbColumns.map(
+			(dbColumn) =>
+				`${quoteIdentifier(dbColumn)} = EXCLUDED.${quoteIdentifier(dbColumn)}`,
+		);
+		return {
+			conflictTarget: `ON CONSTRAINT ${quoteIdentifier(conflict.constraint)}`,
+			updateSet: updateClauses.join(", "),
+		};
+	}
+
+	const conflictDbColumns = (conflict.columns ?? []).map((key) =>
 		resolveColumnName(key, columns),
 	);
 	const updateClauses = dbColumns
@@ -132,7 +143,7 @@ export function buildConflictClause(
 				`${quoteIdentifier(dbColumn)} = EXCLUDED.${quoteIdentifier(dbColumn)}`,
 		);
 	return {
-		conflictClause: conflictDbColumns.map(quoteIdentifier).join(", "),
+		conflictTarget: `(${conflictDbColumns.map(quoteIdentifier).join(", ")})`,
 		updateSet: updateClauses.join(", "),
 	};
 }

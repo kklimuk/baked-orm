@@ -242,11 +242,28 @@ await user.save();
 // Destroy
 await user.destroy();
 
-// Upsert
+// Upsert (insert or update on conflict)
 await User.upsert(
   { email: "alice@example.com", name: "Alice Updated" },
-  { conflictColumns: ["email"] },
+  { conflict: { columns: ["email"] } },
 );
+
+// Upsert with partial unique index
+await Share.upsertAll(rows, {
+  conflict: {
+    columns: ["resourceType", "resourceId", "userId"],
+    where: { sourceShareId: { ne: null } },
+  },
+});
+
+// Upsert with named constraint
+await Share.upsertAll(rows, {
+  conflict: { constraint: "shares_inherited_unique" },
+});
+
+// Insert-or-skip (ON CONFLICT DO NOTHING)
+await User.createMany(rows, { conflict: "ignore" });
+await User.create(attrs, { conflict: "ignore" });
 ```
 
 ### Query builder

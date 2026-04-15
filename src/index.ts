@@ -20,10 +20,12 @@ export { Snapshot } from "./model/snapshot";
 export type {
 	AssociationDefinition,
 	BaseModel,
+	ConflictOption,
+	ConflictTarget,
+	InsertOptions,
 	LockMode,
 	ModelStatic,
 	OrderDirection,
-	UpsertOptions,
 } from "./model/types";
 export {
 	belongsTo,

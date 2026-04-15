@@ -11,6 +11,8 @@ import {
 	type AnyModelStatic,
 	type AssociationDefinition,
 	type AssociationProperties,
+	type ConflictOption,
+	type InsertOptions,
 	type ModelStatic,
 	type OrderDirection,
 	RecordNotFoundError,
@@ -18,7 +20,6 @@ import {
 	hasMany as standaloneHasMany,
 	hasManyThrough as standaloneHasManyThrough,
 	hasOne as standaloneHasOne,
-	type UpsertOptions,
 } from "./types";
 import {
 	buildConflictClause,
@@ -31,7 +32,7 @@ import {
 	resolveColumnName,
 } from "./utils";
 import { collectValidationErrors, type ValidationContext } from "./validations";
-import type { WhereConditions } from "./where";
+import { compileConditions, type WhereConditions } from "./where";
 
 const MODEL_REGISTRY = new Map<string, AnyModelStatic>();
 
@@ -97,6 +98,61 @@ export function Model<Row>(
 		return { dbColumns, allValues, rowPlaceholders };
 	}
 
+	function buildConflictSQL(
+		conflict: ConflictOption<Row>,
+		defaultAction: "update" | "ignore",
+		dbColumns: string[],
+		paramOffset: number,
+	): { conflictSQL: string; extraValues: unknown[] } {
+		if (conflict === "ignore") {
+			return { conflictSQL: " ON CONFLICT DO NOTHING", extraValues: [] };
+		}
+
+		const { conflictTarget, updateSet } = buildConflictClause(
+			dbColumns,
+			conflict,
+			columns,
+		);
+
+		let whereSQL = "";
+		const extraValues: unknown[] = [];
+
+		if ("columns" in conflict && conflict.where) {
+			const compiled = compileConditions(
+				conflict.where as Record<string, unknown>,
+				columns,
+				paramOffset,
+			);
+			if (compiled.length > 0) {
+				whereSQL = ` WHERE ${compiled.map((clause) => clause.fragment).join(" AND ")}`;
+				for (const clause of compiled) {
+					extraValues.push(...clause.values);
+				}
+			}
+		}
+
+		const action = conflict.action ?? defaultAction;
+		let actionSQL: string;
+		if (action === "update") {
+			// When all inserted columns are conflict columns, updateSet is empty.
+			// Fall back to setting the first column to itself (harmless no-op).
+			const firstColumn = dbColumns[0];
+			const effectiveUpdateSet =
+				updateSet ||
+				(firstColumn
+					? `${quoteIdentifier(firstColumn)} = EXCLUDED.${quoteIdentifier(firstColumn)}`
+					: "");
+			actionSQL = `DO UPDATE SET ${effectiveUpdateSet}`;
+		} else {
+			actionSQL = "DO NOTHING";
+		}
+
+		return {
+			conflictSQL: ` ON CONFLICT ${conflictTarget}${whereSQL} ${actionSQL}`,
+			extraValues,
+		};
+	}
+
 	function hydrateRows<ModelClass extends new () => object>(
 		Klass: ModelClass,
 		// biome-ignore lint/suspicious/noExplicitAny: Bun.sql result rows
@@ -117,6 +173,7 @@ export function Model<Row>(
 		#persisted = false;
 		#validationErrors = new ValidationErrors();
 		#snapshot = new Snapshot(columns, primaryKeyField);
+		#conflictOption: ConflictOption<Row> | undefined;
 
 		static tableDefinition = tableDefinition;
 		static tableName = tableName;
@@ -164,6 +221,7 @@ export function Model<Row>(
 
 			await this.#runValidation();
 			if (!this.#validationErrors.isEmpty) {
+				this.#conflictOption = undefined;
 				throw new ValidationError(
 					this.constructor.name,
 					this.#validationErrors,
@@ -215,19 +273,40 @@ export function Model<Row>(
 			const values = columnEntries.map(([camelKey]) => this[camelKey]);
 			const placeholders = dbColumns.map((_, index) => `$${index + 1}`);
 
-			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`;
+			let conflictSQL = "";
+			const allValues = [...values];
+			const conflict = this.#conflictOption;
+			this.#conflictOption = undefined;
+
+			if (conflict) {
+				const result = buildConflictSQL(
+					conflict,
+					"ignore",
+					dbColumns,
+					values.length + 1,
+				);
+				conflictSQL = result.conflictSQL;
+				allValues.push(...result.extraValues);
+			}
+
+			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")})${conflictSQL} RETURNING *`;
 			const rows = await executeQuery(
 				connection,
 				text,
-				values,
+				allValues,
 				sensitiveDbColumns,
 			);
 			const row = rows[0] as Record<string, unknown> | undefined;
 			if (row) {
 				Object.assign(this, mapRowToModel(row, reverseMap));
+				this.#persisted = true;
+				this.#snapshot.capture(this);
+			} else if (!conflict) {
+				this.#persisted = true;
+				this.#snapshot.capture(this);
 			}
-			this.#persisted = true;
-			this.#snapshot.capture(this);
+			// If conflict was set and no row returned (DO NOTHING triggered),
+			// instance stays un-persisted — caller can check isNewRecord.
 		}
 
 		async #performUpdate(): Promise<void> {
@@ -532,8 +611,12 @@ export function Model<Row>(
 		static async create<Subclass extends typeof ModelBase>(
 			this: Subclass,
 			attributes: Partial<Row>,
+			options?: InsertOptions<Row>,
 		): Promise<InstanceType<Subclass>> {
 			const instance = new this(attributes) as InstanceType<Subclass>;
+			if (options?.conflict) {
+				(instance as ModelBase).#conflictOption = options.conflict;
+			}
 			await instance.save();
 			return instance;
 		}
@@ -541,6 +624,7 @@ export function Model<Row>(
 		static async createMany<Subclass extends typeof ModelBase>(
 			this: Subclass,
 			records: Partial<Row>[],
+			options?: InsertOptions<Row>,
 		): Promise<InstanceType<Subclass>[]> {
 			if (records.length === 0) return [];
 
@@ -548,12 +632,28 @@ export function Model<Row>(
 				buildBatchParams(records);
 			const sensitiveDbColumns = buildSensitiveColumns(this, columns);
 
+			let conflictSQL = "";
+			let finalValues = allValues;
+
+			if (options?.conflict) {
+				const result = buildConflictSQL(
+					options.conflict,
+					"ignore",
+					dbColumns,
+					allValues.length + 1,
+				);
+				conflictSQL = result.conflictSQL;
+				if (result.extraValues.length > 0) {
+					finalValues = [...allValues, ...result.extraValues];
+				}
+			}
+
 			const connection = getModelConnection();
-			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")} RETURNING *`;
+			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")}${conflictSQL} RETURNING *`;
 			const rows = await executeQuery(
 				connection,
 				text,
-				allValues,
+				finalValues,
 				sensitiveDbColumns,
 			);
 
@@ -563,7 +663,7 @@ export function Model<Row>(
 		static async upsert<Subclass extends typeof ModelBase>(
 			this: Subclass,
 			attributes: Partial<Row>,
-			options: UpsertOptions,
+			options: Required<InsertOptions<Row>>,
 		): Promise<InstanceType<Subclass>> {
 			const connection = getModelConnection();
 			const sensitiveDbColumns = buildSensitiveColumns(this, columns);
@@ -574,28 +674,36 @@ export function Model<Row>(
 			);
 			const placeholders = dbColumns.map((_, index) => `$${index + 1}`);
 
-			const { conflictClause, updateSet } = buildConflictClause(
+			const { conflictSQL, extraValues } = buildConflictSQL(
+				options.conflict,
+				"update",
 				dbColumns,
-				options.conflictColumns,
-				columns,
+				values.length + 1,
 			);
+			const finalValues =
+				extraValues.length > 0 ? [...values, ...extraValues] : values;
 
-			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")}) ON CONFLICT (${conflictClause}) DO UPDATE SET ${updateSet} RETURNING *`;
+			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES (${placeholders.join(", ")})${conflictSQL} RETURNING *`;
 			const rows = await executeQuery(
 				connection,
 				text,
-				values,
+				finalValues,
 				sensitiveDbColumns,
 			);
 			const row = rows[0] as Record<string, unknown> | undefined;
-			const mapped = row ? mapRowToModel(row, reverseMap) : {};
+			if (!row) {
+				throw new Error(
+					`${this.name}.upsert: conflict with action "ignore" matched an existing row — no row returned. Use create() with conflict instead if you expect skipped inserts.`,
+				);
+			}
+			const mapped = mapRowToModel(row, reverseMap);
 			return hydrateInstance(this, mapped) as InstanceType<Subclass>;
 		}
 
 		static async upsertAll<Subclass extends typeof ModelBase>(
 			this: Subclass,
 			records: Partial<Row>[],
-			options: UpsertOptions,
+			options: Required<InsertOptions<Row>>,
 		): Promise<InstanceType<Subclass>[]> {
 			if (records.length === 0) return [];
 
@@ -603,18 +711,21 @@ export function Model<Row>(
 				buildBatchParams(records);
 			const sensitiveDbColumns = buildSensitiveColumns(this, columns);
 
-			const { conflictClause, updateSet } = buildConflictClause(
+			const { conflictSQL, extraValues } = buildConflictSQL(
+				options.conflict,
+				"update",
 				dbColumns,
-				options.conflictColumns,
-				columns,
+				allValues.length + 1,
 			);
+			const finalValues =
+				extraValues.length > 0 ? [...allValues, ...extraValues] : allValues;
 
 			const connection = getModelConnection();
-			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")} ON CONFLICT (${conflictClause}) DO UPDATE SET ${updateSet} RETURNING *`;
+			const text = `INSERT INTO ${quoteIdentifier(tableName)} (${dbColumns.map(quoteIdentifier).join(", ")}) VALUES ${rowPlaceholders.join(", ")}${conflictSQL} RETURNING *`;
 			const rows = await executeQuery(
 				connection,
 				text,
-				allValues,
+				finalValues,
 				sensitiveDbColumns,
 			);
 

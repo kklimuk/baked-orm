@@ -390,7 +390,7 @@ describe("Model mass operations", () => {
 	test("upsert inserts new record", async () => {
 		const user = await User.upsert(
 			{ name: "Alice", email: "alice@test.com" },
-			{ conflictColumns: ["email"] },
+			{ conflict: { columns: ["email"] } },
 		);
 		expect(user.name).toBe("Alice");
 		expect(user.id).toBeDefined();

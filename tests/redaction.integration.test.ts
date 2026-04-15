@@ -223,7 +223,7 @@ describe("Sensitive field redaction in query logs", () => {
 					passwordDigest: "upsert-hash",
 					apiToken: "tok_upsert",
 				},
-				{ conflictColumns: ["email"] },
+				{ conflict: { columns: ["email"] } },
 			);
 		});
 

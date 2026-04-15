@@ -59,8 +59,36 @@ export interface AnyModelStatic {
 	name: string;
 }
 
-export type UpsertOptions = {
-	conflictColumns: string[];
+// --- Conflict / upsert option types ---
+
+/** Column-based or named-constraint conflict target for INSERT ... ON CONFLICT */
+export type ConflictTarget<Row = Record<string, unknown>> =
+	| {
+			columns: string[];
+			constraint?: never;
+			where?: WhereConditions<Row>;
+			action?: "update" | "ignore";
+	  }
+	| {
+			constraint: string;
+			columns?: never;
+			where?: never;
+			action?: "update" | "ignore";
+	  };
+
+/** Conflict option — "ignore" shorthand (untargeted DO NOTHING) or a full target */
+export type ConflictOption<Row = Record<string, unknown>> =
+	| "ignore"
+	| ConflictTarget<Row>;
+
+/**
+ * Options for insert methods. Default action depends on the method:
+ * - upsert/upsertAll: default "update" (DO UPDATE)
+ * - create/createMany: default "ignore" (DO NOTHING)
+ * An explicit `action` on the conflict target overrides the default.
+ */
+export type InsertOptions<Row = Record<string, unknown>> = {
+	conflict?: ConflictOption<Row>;
 };
 
 // --- Branded association definition types ---
@@ -313,20 +341,22 @@ export interface ModelStatic<Row> {
 	create<Self extends ModelStatic<Row>>(
 		this: Self,
 		attributes: Partial<Row>,
+		options?: InsertOptions<Row>,
 	): Promise<InstanceType<Self>>;
 	createMany<Self extends ModelStatic<Row>>(
 		this: Self,
 		records: Partial<Row>[],
+		options?: InsertOptions<Row>,
 	): Promise<InstanceType<Self>[]>;
 	upsert<Self extends ModelStatic<Row>>(
 		this: Self,
 		attributes: Partial<Row>,
-		options: UpsertOptions,
+		options: Required<InsertOptions<Row>>,
 	): Promise<InstanceType<Self>>;
 	upsertAll<Self extends ModelStatic<Row>>(
 		this: Self,
 		records: Partial<Row>[],
-		options: UpsertOptions,
+		options: Required<InsertOptions<Row>>,
 	): Promise<InstanceType<Self>[]>;
 
 	hasMany(
