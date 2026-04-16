@@ -30,9 +30,11 @@ export type {
 	ConflictOption,
 	ConflictTarget,
 	InsertOptions,
+	IsolationLevel,
 	LockMode,
 	ModelStatic,
 	OrderDirection,
+	TransactionOptions,
 } from "./model/types";
 export {
 	belongsTo,

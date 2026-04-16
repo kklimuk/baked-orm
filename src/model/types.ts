@@ -31,6 +31,15 @@ export type LockMode =
 	| "FOR SHARE SKIP LOCKED"
 	| "FOR KEY SHARE SKIP LOCKED";
 
+export type IsolationLevel =
+	| "read committed"
+	| "repeatable read"
+	| "serializable";
+
+export type TransactionOptions = {
+	isolation?: IsolationLevel;
+};
+
 export type AssociationType =
 	| "belongsTo"
 	| "hasOne"

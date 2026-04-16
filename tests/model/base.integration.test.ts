@@ -10,7 +10,13 @@ import {
 import type { SQL } from "bun";
 
 import { Model } from "../../src/model/base";
-import { connect, query, transaction } from "../../src/model/connection";
+import {
+	connect,
+	isInTransaction,
+	query,
+	transaction,
+} from "../../src/model/connection";
+import type { IsolationLevel } from "../../src/model/types";
 import { hasMany, RecordNotFoundError } from "../../src/model/types";
 import type { TableDefinition } from "../../src/types";
 import { getTestConnection, resetDatabase } from "../helpers/postgres";
@@ -598,6 +604,189 @@ describe("Transactions", () => {
 		}
 		const count = await User.count();
 		expect(count).toBe(0);
+	});
+
+	test("nested transaction commits both inner and outer", async () => {
+		await transaction(async () => {
+			await User.create({ name: "Alice", email: "alice@test.com" });
+			await transaction(async () => {
+				await User.create({ name: "Bob", email: "bob@test.com" });
+			});
+		});
+		const count = await User.count();
+		expect(count).toBe(2);
+	});
+
+	test("nested transaction rolls back inner only on inner error", async () => {
+		await transaction(async () => {
+			await User.create({ name: "Alice", email: "alice@test.com" });
+			try {
+				await transaction(async () => {
+					await User.create({ name: "Bob", email: "bob@test.com" });
+					throw new Error("rollback inner only");
+				});
+			} catch {
+				// expected — inner rolled back
+			}
+			const count = await User.count();
+			expect(count).toBe(1);
+		});
+		const count = await User.count();
+		expect(count).toBe(1);
+	});
+
+	test("nested transaction — outer error rolls back everything", async () => {
+		try {
+			await transaction(async () => {
+				await User.create({ name: "Alice", email: "alice@test.com" });
+				await transaction(async () => {
+					await User.create({ name: "Bob", email: "bob@test.com" });
+				});
+				throw new Error("rollback outer");
+			});
+		} catch {
+			// expected
+		}
+		const count = await User.count();
+		expect(count).toBe(0);
+	});
+
+	test("supports multiple levels of nesting", async () => {
+		await transaction(async () => {
+			await User.create({ name: "Alice", email: "alice@test.com" });
+			await transaction(async () => {
+				await User.create({ name: "Bob", email: "bob@test.com" });
+				await transaction(async () => {
+					await User.create({
+						name: "Charlie",
+						email: "charlie@test.com",
+					});
+				});
+			});
+		});
+		const count = await User.count();
+		expect(count).toBe(3);
+	});
+
+	test("isInTransaction returns true inside nested transaction", async () => {
+		expect(isInTransaction()).toBe(false);
+		await transaction(async () => {
+			expect(isInTransaction()).toBe(true);
+			await transaction(async () => {
+				expect(isInTransaction()).toBe(true);
+			});
+		});
+	});
+
+	test("transaction with isolation level serializable", async () => {
+		await transaction({ isolation: "serializable" }, async () => {
+			const [row] = await query<{ transaction_isolation: string }>(
+				"SHOW transaction_isolation",
+			);
+			expect(row?.transaction_isolation).toBe("serializable");
+		});
+	});
+
+	test("transaction with isolation level repeatable read", async () => {
+		await transaction({ isolation: "repeatable read" }, async () => {
+			const [row] = await query<{ transaction_isolation: string }>(
+				"SHOW transaction_isolation",
+			);
+			expect(row?.transaction_isolation).toBe("repeatable read");
+		});
+	});
+
+	test("transaction with isolation level read committed", async () => {
+		await transaction({ isolation: "read committed" }, async () => {
+			const [row] = await query<{ transaction_isolation: string }>(
+				"SHOW transaction_isolation",
+			);
+			expect(row?.transaction_isolation).toBe("read committed");
+		});
+	});
+
+	test("isolation level on nested transaction throws", async () => {
+		await transaction(async () => {
+			await expect(
+				transaction({ isolation: "serializable" }, async () => {
+					await User.create({ name: "Alice", email: "alice@test.com" });
+				}),
+			).rejects.toThrow("Isolation level cannot be set on nested transactions");
+		});
+	});
+
+	test("invalid isolation level throws", async () => {
+		await expect(
+			transaction({ isolation: "snapshot" as IsolationLevel }, async () => {
+				await User.create({ name: "Alice", email: "alice@test.com" });
+			}),
+		).rejects.toThrow('Invalid isolation level "snapshot"');
+	});
+
+	test("transaction stores do not leak between calls", async () => {
+		// Transaction A rolls back — its store must not leak into B.
+		try {
+			await transaction(async () => {
+				await User.create({ name: "A", email: "a@test.com" });
+				expect(isInTransaction()).toBe(true);
+				throw new Error("rollback A");
+			});
+		} catch {
+			// expected
+		}
+
+		// Store is properly cleaned up after A
+		expect(isInTransaction()).toBe(false);
+
+		// Transaction B uses its own store — A's rollback has no effect
+		await transaction(async () => {
+			expect(isInTransaction()).toBe(true);
+			await User.create({ name: "B", email: "b@test.com" });
+		});
+
+		// Store cleaned up after B too
+		expect(isInTransaction()).toBe(false);
+
+		// Only B's record survived
+		const count = await User.count();
+		expect(count).toBe(1);
+		const user = await User.first();
+		expect(user?.name).toBe("B");
+	});
+
+	test("concurrent transactions have isolated stores", async () => {
+		// Barrier: both transactions signal after INSERT, then wait for
+		// the other — guarantees true interleaving without sleeps.
+		let signalA: () => void;
+		let signalB: () => void;
+		const barrierA = new Promise<void>((resolve) => {
+			signalA = resolve;
+		});
+		const barrierB = new Promise<void>((resolve) => {
+			signalB = resolve;
+		});
+
+		// If AsyncLocalStorage leaked, A's rollback would affect B's connection.
+		const transactionA = transaction(async () => {
+			await User.create({ name: "A", email: "a@test.com" });
+			signalA();
+			await barrierB;
+			throw new Error("rollback A");
+		}).catch(() => {});
+
+		const transactionB = transaction(async () => {
+			await User.create({ name: "B", email: "b@test.com" });
+			signalB();
+			await barrierA;
+		});
+
+		await Promise.all([transactionA, transactionB]);
+
+		// A rolled back, B committed — only B's record survives
+		const count = await User.count();
+		expect(count).toBe(1);
+		const user = await User.first();
+		expect(user?.name).toBe("B");
 	});
 });
 

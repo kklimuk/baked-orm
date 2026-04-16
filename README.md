@@ -543,6 +543,43 @@ await transaction(async () => {
 });
 ```
 
+#### Isolation levels
+
+Control the transaction isolation level by passing an options object as the first argument:
+
+```ts
+await transaction({ isolation: "serializable" }, async () => {
+  // Runs at SERIALIZABLE isolation
+});
+
+await transaction({ isolation: "repeatable read" }, async () => {
+  // Runs at REPEATABLE READ isolation
+});
+```
+
+Supported levels: `"read committed"` (PostgreSQL default), `"repeatable read"`, `"serializable"`.
+
+#### Nested transactions (savepoints)
+
+Calling `transaction()` inside another `transaction()` automatically uses PostgreSQL savepoints. Inner errors roll back only the inner block:
+
+```ts
+await transaction(async () => {
+  await User.create({ name: "Alice" });
+
+  try {
+    await transaction(async () => {
+      await User.create({ name: "Bob" });
+      throw new Error("rollback inner only");
+    });
+  } catch {
+    // User "Alice" persists, "Bob" is rolled back
+  }
+});
+```
+
+Multiple levels of nesting are supported. Isolation levels cannot be set on nested transactions (PostgreSQL limitation).
+
 ### Pessimistic locking
 
 Lock rows with `SELECT ... FOR UPDATE` to safely perform read-modify-write operations under concurrency:
