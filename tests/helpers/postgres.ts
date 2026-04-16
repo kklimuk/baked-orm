@@ -2,10 +2,8 @@ import { SQL } from "bun";
 
 const DATABASE = "baked_orm_test";
 
-export function getTestConnection(): SQL {
-	// Single connection ensures advisory locks are acquired and released
-	// on the same session, matching how a real CLI invocation behaves.
-	return new SQL({ database: DATABASE, max: 1 });
+export function getTestConnection(options?: { max?: number }): SQL {
+	return new SQL({ database: DATABASE, max: options?.max ?? 10 });
 }
 
 export async function resetDatabase(connection: SQL): Promise<void> {
