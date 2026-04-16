@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { ValidationError, ValidationErrors } from "../src/model/errors";
+import { ValidationError, ValidationErrors } from "../../src/model/errors";
 import {
 	collectValidationErrors,
 	defineValidator,
 	validate,
 	validates,
-} from "../src/model/validations";
+} from "../../src/model/validations";
 
 describe("ValidationErrors", () => {
 	test("starts empty", () => {

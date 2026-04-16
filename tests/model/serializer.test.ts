@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { serialize } from "../src/model/serializer";
-import type { TableDefinition } from "../src/types";
+import { serialize } from "../../src/model/serializer";
+import type { TableDefinition } from "../../src/types";
 
 // --- Row classes + table definitions ---
 

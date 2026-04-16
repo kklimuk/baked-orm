@@ -9,11 +9,11 @@ import {
 } from "bun:test";
 import type { SQL } from "bun";
 
-import { Model } from "../src/model/base";
-import { connect, query, transaction } from "../src/model/connection";
-import { hasMany, RecordNotFoundError } from "../src/model/types";
-import type { TableDefinition } from "../src/types";
-import { getTestConnection, resetDatabase } from "./helpers/postgres";
+import { Model } from "../../src/model/base";
+import { connect, query, transaction } from "../../src/model/connection";
+import { hasMany, RecordNotFoundError } from "../../src/model/types";
+import type { TableDefinition } from "../../src/types";
+import { getTestConnection, resetDatabase } from "../helpers/postgres";
 
 let connection: SQL;
 
@@ -932,12 +932,9 @@ describe("Batch operations", () => {
 		]);
 
 		const names: string[] = [];
-		await User.all().findEach(
-			(user) => {
-				names.push(user.name);
-			},
-			{ batchSize: 2 },
-		);
+		for await (const user of User.all().findEach({ batchSize: 2 })) {
+			names.push(user.name);
+		}
 
 		expect(names).toHaveLength(5);
 	});
@@ -952,12 +949,9 @@ describe("Batch operations", () => {
 		]);
 
 		const batchSizes: number[] = [];
-		await User.all().findInBatches(
-			(batch) => {
-				batchSizes.push(batch.length);
-			},
-			{ batchSize: 2 },
-		);
+		for await (const batch of User.all().findInBatches({ batchSize: 2 })) {
+			batchSizes.push(batch.length);
+		}
 
 		expect(batchSizes).toEqual([2, 2, 1]);
 	});
@@ -970,9 +964,9 @@ describe("Batch operations", () => {
 		]);
 
 		const names: string[] = [];
-		await User.where({ name: "Alice" }).findEach((user) => {
+		for await (const user of User.where({ name: "Alice" }).findEach()) {
 			names.push(user.name);
-		});
+		}
 
 		expect(names).toEqual(["Alice"]);
 	});

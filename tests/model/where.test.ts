@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { compileConditions, SUBQUERY } from "../src/model/where";
-import type { ColumnDefinition } from "../src/types";
+import { compileConditions, SUBQUERY } from "../../src/model/where";
+import type { ColumnDefinition } from "../../src/types";
 
 const columns: Record<string, ColumnDefinition> = {
 	id: { type: "uuid", nullable: false, columnName: "id" },

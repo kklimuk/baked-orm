@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { QueryBuilder } from "../src/model/query";
-import type { TableDefinition } from "../src/types";
+import { QueryBuilder } from "../../src/model/query";
+import type { TableDefinition } from "../../src/types";
 
 class AccountsRow {
 	declare id: string;
@@ -140,7 +140,7 @@ describe("QueryBuilder.lock() — SQL generation", () => {
 			.descendants({ via: "parentId" });
 
 		expect(() => recursive.lock()).toThrow(
-			"Cannot use lock() on a recursive query",
+			"Cannot call lock() on a recursive query",
 		);
 	});
 });

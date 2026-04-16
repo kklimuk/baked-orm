@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
+import { renumberParameters } from "../../src/common/query";
 import {
 	buildKnownColumnNames,
-	renumberParameters,
 	requalifyFragment,
-} from "../src/model/recursive";
-import type { ColumnDefinition } from "../src/types";
+} from "../../src/plugins/recursive-cte";
+import type { ColumnDefinition } from "../../src/types";
 
 describe("requalifyFragment", () => {
 	const knownColumns = new Set(["id", "parent_id", "org_id", "discarded_at"]);

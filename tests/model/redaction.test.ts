@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
 	buildSensitiveColumns,
 	redactSensitiveValues,
-} from "../src/model/utils";
-import type { ColumnDefinition } from "../src/types";
+} from "../../src/model/utils";
+import type { ColumnDefinition } from "../../src/types";
 
 const sensitive = new Set(["password_digest", "api_token"]);
 

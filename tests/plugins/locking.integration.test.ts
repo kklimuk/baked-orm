@@ -9,10 +9,10 @@ import {
 } from "bun:test";
 import { SQL } from "bun";
 
-import { Model } from "../src/model/base";
-import { connect, transaction } from "../src/model/connection";
-import type { TableDefinition } from "../src/types";
-import { getTestConnection, resetDatabase } from "./helpers/postgres";
+import { Model } from "../../src/model/base";
+import { connect, transaction } from "../../src/model/connection";
+import type { TableDefinition } from "../../src/types";
+import { getTestConnection, resetDatabase } from "../helpers/postgres";
 
 let connection: SQL;
 

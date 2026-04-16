@@ -8,11 +8,11 @@ import {
 } from "bun:test";
 import type { SQL } from "bun";
 
-import { Model } from "../src/model/base";
-import type { QueryLogEntry } from "../src/model/connection";
-import { connect } from "../src/model/connection";
-import type { TableDefinition } from "../src/types";
-import { getTestConnection, resetDatabase } from "./helpers/postgres";
+import { Model } from "../../src/model/base";
+import type { QueryLogEntry } from "../../src/model/connection";
+import { connect } from "../../src/model/connection";
+import type { TableDefinition } from "../../src/types";
+import { getTestConnection, resetDatabase } from "../helpers/postgres";
 
 let connection: SQL;
 

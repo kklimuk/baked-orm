@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Temporal } from "@js-temporal/polyfill";
 
-import { hydrate } from "../src/frontend/hydrate";
-import { FrontendModel } from "../src/frontend/model";
-import { getFrontendRegistry, registerModels } from "../src/frontend/registry";
-import { Snapshot } from "../src/model/snapshot";
-import { validates } from "../src/model/validations";
-import type { TableDefinition } from "../src/types";
+import { hydrate } from "../../src/frontend/hydrate";
+import { FrontendModel } from "../../src/frontend/model";
+import {
+	getFrontendRegistry,
+	registerModels,
+} from "../../src/frontend/registry";
+import { Snapshot } from "../../src/model/snapshot";
+import { validates } from "../../src/model/validations";
+import type { TableDefinition } from "../../src/types";
 
 // --- Row classes (simulating generated schema) ---
 

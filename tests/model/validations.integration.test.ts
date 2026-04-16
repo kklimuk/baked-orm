@@ -9,12 +9,12 @@ import {
 } from "bun:test";
 import type { SQL } from "bun";
 
-import { Model } from "../src/model/base";
-import { connect } from "../src/model/connection";
-import { ValidationError } from "../src/model/errors";
-import { validate, validates } from "../src/model/validations";
-import type { TableDefinition } from "../src/types";
-import { getTestConnection, resetDatabase } from "./helpers/postgres";
+import { Model } from "../../src/model/base";
+import { connect } from "../../src/model/connection";
+import { ValidationError } from "../../src/model/errors";
+import { validate, validates } from "../../src/model/validations";
+import type { TableDefinition } from "../../src/types";
+import { getTestConnection, resetDatabase } from "../helpers/postgres";
 
 let connection: SQL;
 

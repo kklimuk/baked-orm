@@ -7,7 +7,7 @@ import {
 	extractSoftDeleteTableName,
 	extractTableName,
 	formatTimestamp,
-} from "../src/commands/generate";
+} from "../../src/commands/generate";
 
 describe("extractTableName", () => {
 	test("extracts table from create_ prefix", () => {

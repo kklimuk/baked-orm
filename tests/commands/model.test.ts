@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { inferTableName, toSnakeCase } from "../src/commands/model";
+import { inferTableName, toSnakeCase } from "../../src/commands/model";
 
 describe("toSnakeCase", () => {
 	test("converts PascalCase", () => {
