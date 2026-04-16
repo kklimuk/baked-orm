@@ -1,5 +1,5 @@
+import { renumberParameters } from "../common/query";
 import type { ColumnDefinition } from "../types";
-import { renumberParameters } from "./recursive";
 import { quoteIdentifier } from "./utils";
 
 /** Symbol used by `QueryBuilder` to expose its SQL for subquery embedding. */

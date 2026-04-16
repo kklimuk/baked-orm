@@ -1,10 +1,12 @@
-import type { TableDefinition } from "../types";
-import { getModelConnection, isInTransaction } from "./connection";
 import {
-	buildKnownColumnNames,
+	type OrderClause,
+	type Projection,
+	type RenderOptions,
 	renumberParameters,
-	requalifyFragment,
-} from "./recursive";
+	type WhereClause,
+} from "../common/query";
+import type { TableDefinition } from "../types";
+import { getModelConnection } from "./connection";
 import type { OrderDirection } from "./types";
 import {
 	buildReverseColumnMap,
@@ -22,56 +24,33 @@ import {
 	type WhereConditions,
 } from "./where";
 
-type WhereClause = {
-	fragment: string;
-	values: unknown[];
-	/**
-	 * DB column names referenced by this clause, or `null` for opaque
-	 * `whereRaw` fragments. Used by recursive CTE rendering to decide which
-	 * predicates to omit from the recursive step.
-	 */
-	columnNames: string[] | null;
-};
-
-type OrderClause = {
-	column: string;
-	direction: OrderDirection;
-};
-
-type Projection =
-	| { kind: "default" }
-	| { kind: "columns"; dbColumns: string[] }
-	| { kind: "count" }
-	| { kind: "exists" };
-
-type CapturedRecursive = {
-	whereClauses: WhereClause[];
-	fromDbColumn: string;
-	toDbColumn: string;
-	setSemantics: boolean;
-};
-
-type RenderOptions = {
-	fromClause: string;
-	starColumn: string;
-	paramOffset: number;
-};
-
 export class QueryBuilder<Row> {
-	readonly #tableDefinition: TableDefinition<Row>;
-	readonly #reverseMap: Map<string, string>;
-	readonly #whereClauses: WhereClause[];
-	readonly #orderClauses: OrderClause[];
-	readonly #limitValue: number | null;
-	readonly #offsetValue: number | null;
-	readonly #selectColumns: string[];
-	readonly #joinClauses: string[];
-	readonly #includedAssociations: string[];
-	readonly #modelClass: (new (attributes?: Partial<Row>) => Row) | null;
-	readonly #sensitiveColumns: Set<string>;
-	readonly #distinctValue: boolean;
-	readonly #recursiveCte: CapturedRecursive | null;
-	readonly #lockClause: string | null;
+	/** @internal */
+	readonly _tableDefinition: TableDefinition<Row>;
+	/** @internal */
+	readonly _reverseMap: Map<string, string>;
+	/** @internal */
+	readonly _whereClauses: WhereClause[];
+	/** @internal */
+	readonly _orderClauses: OrderClause[];
+	/** @internal */
+	readonly _limitValue: number | null;
+	/** @internal */
+	readonly _offsetValue: number | null;
+	/** @internal */
+	readonly _selectColumns: string[];
+	/** @internal */
+	readonly _joinClauses: string[];
+	/** @internal */
+	readonly _includedAssociations: string[];
+	/** @internal */
+	readonly _modelClass: (new (attributes?: Partial<Row>) => Row) | null;
+	/** @internal */
+	readonly _sensitiveColumns: Set<string>;
+	/** @internal */
+	readonly _distinctValue: boolean;
+	/** @internal — plugin state bag, automatically shallow-copied by _clone() */
+	readonly _extensions: Record<string, unknown>;
 
 	constructor(
 		tableDefinition: TableDefinition<Row>,
@@ -86,30 +65,29 @@ export class QueryBuilder<Row> {
 			modelClass?: (new (attributes?: Partial<Row>) => Row) | null;
 			reverseMap?: Map<string, string>;
 			distinctValue?: boolean;
-			recursiveCte?: CapturedRecursive | null;
-			lockClause?: string | null;
+			extensions?: Record<string, unknown>;
 		},
 	) {
-		this.#tableDefinition = tableDefinition;
-		this.#reverseMap =
+		this._tableDefinition = tableDefinition;
+		this._reverseMap =
 			options?.reverseMap ?? buildReverseColumnMap(tableDefinition.columns);
-		this.#whereClauses = options?.whereClauses ?? [];
-		this.#orderClauses = options?.orderClauses ?? [];
-		this.#limitValue = options?.limitValue ?? null;
-		this.#offsetValue = options?.offsetValue ?? null;
-		this.#selectColumns = options?.selectColumns ?? [];
-		this.#joinClauses = options?.joinClauses ?? [];
-		this.#includedAssociations = options?.includedAssociations ?? [];
-		this.#modelClass = options?.modelClass ?? null;
-		this.#sensitiveColumns = options?.modelClass
+		this._whereClauses = options?.whereClauses ?? [];
+		this._orderClauses = options?.orderClauses ?? [];
+		this._limitValue = options?.limitValue ?? null;
+		this._offsetValue = options?.offsetValue ?? null;
+		this._selectColumns = options?.selectColumns ?? [];
+		this._joinClauses = options?.joinClauses ?? [];
+		this._includedAssociations = options?.includedAssociations ?? [];
+		this._modelClass = options?.modelClass ?? null;
+		this._sensitiveColumns = options?.modelClass
 			? buildSensitiveColumns(options.modelClass, tableDefinition.columns)
 			: new Set();
-		this.#distinctValue = options?.distinctValue ?? false;
-		this.#recursiveCte = options?.recursiveCte ?? null;
-		this.#lockClause = options?.lockClause ?? null;
+		this._distinctValue = options?.distinctValue ?? false;
+		this._extensions = options?.extensions ?? {};
 	}
 
-	#clone(overrides: {
+	/** @internal */
+	_clone(overrides: {
 		whereClauses?: WhereClause[];
 		orderClauses?: OrderClause[];
 		limitValue?: number | null;
@@ -118,53 +96,49 @@ export class QueryBuilder<Row> {
 		joinClauses?: string[];
 		includedAssociations?: string[];
 		distinctValue?: boolean;
-		recursiveCte?: CapturedRecursive | null;
-		lockClause?: string | null;
+		extensions?: Record<string, unknown>;
 	}): QueryBuilder<Row> {
-		return new QueryBuilder(this.#tableDefinition, {
-			whereClauses: overrides.whereClauses ?? this.#whereClauses,
-			orderClauses: overrides.orderClauses ?? this.#orderClauses,
+		return new QueryBuilder(this._tableDefinition, {
+			whereClauses: overrides.whereClauses ?? this._whereClauses,
+			orderClauses: overrides.orderClauses ?? this._orderClauses,
 			limitValue:
-				"limitValue" in overrides ? overrides.limitValue : this.#limitValue,
+				"limitValue" in overrides ? overrides.limitValue : this._limitValue,
 			offsetValue:
-				"offsetValue" in overrides ? overrides.offsetValue : this.#offsetValue,
-			selectColumns: overrides.selectColumns ?? this.#selectColumns,
-			joinClauses: overrides.joinClauses ?? this.#joinClauses,
+				"offsetValue" in overrides ? overrides.offsetValue : this._offsetValue,
+			selectColumns: overrides.selectColumns ?? this._selectColumns,
+			joinClauses: overrides.joinClauses ?? this._joinClauses,
 			includedAssociations:
-				overrides.includedAssociations ?? this.#includedAssociations,
-			modelClass: this.#modelClass,
-			reverseMap: this.#reverseMap,
+				overrides.includedAssociations ?? this._includedAssociations,
+			modelClass: this._modelClass,
+			reverseMap: this._reverseMap,
 			distinctValue:
 				"distinctValue" in overrides
 					? overrides.distinctValue
-					: this.#distinctValue,
-			recursiveCte:
-				"recursiveCte" in overrides
-					? overrides.recursiveCte
-					: this.#recursiveCte,
-			lockClause:
-				"lockClause" in overrides ? overrides.lockClause : this.#lockClause,
+					: this._distinctValue,
+			extensions: overrides.extensions
+				? { ...this._extensions, ...overrides.extensions }
+				: this._extensions,
 		});
 	}
 
 	where(conditions: WhereConditions<Row>): QueryBuilder<Row> {
 		const startParamIndex =
-			this.#whereClauses.reduce(
+			this._whereClauses.reduce(
 				(count, clause) => count + clause.values.length,
 				0,
 			) + 1;
 		const newClauses = compileConditions(
 			conditions as Record<string, unknown>,
-			this.#tableDefinition.columns,
+			this._tableDefinition.columns,
 			startParamIndex,
 		);
-		return this.#clone({
-			whereClauses: [...this.#whereClauses, ...newClauses],
+		return this._clone({
+			whereClauses: [...this._whereClauses, ...newClauses],
 		});
 	}
 
 	whereRaw(fragment: string, values?: unknown[]): QueryBuilder<Row> {
-		const paramOffset = this.#whereClauses.reduce(
+		const paramOffset = this._whereClauses.reduce(
 			(count, clause) => count + clause.values.length,
 			0,
 		);
@@ -177,9 +151,9 @@ export class QueryBuilder<Row> {
 			);
 		}
 
-		return this.#clone({
+		return this._clone({
 			whereClauses: [
-				...this.#whereClauses,
+				...this._whereClauses,
 				{
 					fragment: renumberedFragment,
 					values: values ?? [],
@@ -192,7 +166,7 @@ export class QueryBuilder<Row> {
 	order(
 		clause: Partial<Record<keyof Row & string, OrderDirection>>,
 	): QueryBuilder<Row> {
-		const columns = this.#tableDefinition.columns;
+		const columns = this._tableDefinition.columns;
 		const newClauses: OrderClause[] = [];
 		for (const [key, direction] of Object.entries(clause) as [
 			string,
@@ -201,166 +175,75 @@ export class QueryBuilder<Row> {
 			const dbColumn = resolveColumnName(key, columns);
 			newClauses.push({ column: dbColumn, direction });
 		}
-		return this.#clone({
-			orderClauses: [...this.#orderClauses, ...newClauses],
+		return this._clone({
+			orderClauses: [...this._orderClauses, ...newClauses],
 		});
 	}
 
 	limit(count: number): QueryBuilder<Row> {
-		return this.#clone({ limitValue: count });
+		return this._clone({ limitValue: count });
 	}
 
 	offset(count: number): QueryBuilder<Row> {
-		return this.#clone({ offsetValue: count });
+		return this._clone({ offsetValue: count });
 	}
 
 	select(...selectColumns: (keyof Row & string)[]): QueryBuilder<Row> {
-		const columns = this.#tableDefinition.columns;
+		const columns = this._tableDefinition.columns;
 		const dbColumns = selectColumns.map((key) =>
 			resolveColumnName(key, columns),
 		);
-		return this.#clone({ selectColumns: dbColumns });
+		return this._clone({ selectColumns: dbColumns });
 	}
 
 	joins(joinClause: string): QueryBuilder<Row> {
-		return this.#clone({
-			joinClauses: [...this.#joinClauses, joinClause],
+		return this._clone({
+			joinClauses: [...this._joinClauses, joinClause],
 		});
 	}
 
 	includes(...associationNames: string[]): QueryBuilder<Row> {
-		return this.#clone({
+		return this._clone({
 			includedAssociations: [
-				...this.#includedAssociations,
+				...this._includedAssociations,
 				...associationNames,
 			],
 		});
 	}
 
 	distinct(): QueryBuilder<Row> {
-		return this.#clone({ distinctValue: true });
+		return this._clone({ distinctValue: true });
 	}
 
-	lock(mode?: string): QueryBuilder<Row> {
-		if (this.#recursiveCte) {
-			throw new Error(
-				"Cannot use lock() on a recursive query — PostgreSQL does not allow FOR UPDATE on CTEs",
-			);
-		}
-		return this.#clone({ lockClause: mode ?? "FOR UPDATE" });
-	}
-
-	#assertNoRecursiveCte(operation: string): void {
-		if (this.#recursiveCte) {
-			throw new Error(
-				`Cannot call ${operation}() on a recursive query. Run the recursive scope to a result set first.`,
-			);
-		}
-	}
-
-	recursiveOn(options: {
-		from: keyof Row & string;
-		to: keyof Row & string;
-		setSemantics?: boolean;
-	}): QueryBuilder<Row> {
-		if (this.#recursiveCte) {
-			throw new Error(
-				"recursiveOn() cannot be nested — this query already has a recursive CTE applied",
-			);
-		}
-		if (this.#joinClauses.length > 0) {
-			throw new Error(
-				"recursiveOn() cannot be combined with joins() — apply joins after the recursive scope",
-			);
-		}
-		if (
-			this.#orderClauses.length > 0 ||
-			this.#limitValue !== null ||
-			this.#offsetValue !== null
-		) {
-			throw new Error(
-				"recursiveOn() cannot be combined with order/limit/offset on the seed scope — apply ordering after the recursive scope",
-			);
-		}
-
-		const columns = this.#tableDefinition.columns;
-		const fromDbColumn = resolveColumnName(options.from, columns);
-		const toDbColumn = resolveColumnName(options.to, columns);
-
-		const captured: CapturedRecursive = {
-			whereClauses: this.#whereClauses,
-			fromDbColumn,
-			toDbColumn,
-			setSemantics: options.setSemantics ?? true,
-		};
-
-		return new QueryBuilder<Row>(this.#tableDefinition, {
-			whereClauses: [],
-			orderClauses: [],
-			limitValue: null,
-			offsetValue: null,
-			selectColumns: this.#selectColumns,
-			joinClauses: [],
-			includedAssociations: this.#includedAssociations,
-			modelClass: this.#modelClass,
-			reverseMap: this.#reverseMap,
-			distinctValue: this.#distinctValue,
-			recursiveCte: captured,
-		});
-	}
-
-	descendants(options: { via: keyof Row & string }): QueryBuilder<Row> {
-		const primaryKey = this.#tableDefinition.primaryKey;
-		if (primaryKey.length !== 1) {
-			throw new Error(
-				"descendants() requires a single-column primary key on the table",
-			);
-		}
-		return this.recursiveOn({
-			from: options.via,
-			to: primaryKey[0] as keyof Row & string,
-		});
-	}
-
-	ancestors(options: { via: keyof Row & string }): QueryBuilder<Row> {
-		const primaryKey = this.#tableDefinition.primaryKey;
-		if (primaryKey.length !== 1) {
-			throw new Error(
-				"ancestors() requires a single-column primary key on the table",
-			);
-		}
-		return this.recursiveOn({
-			from: primaryKey[0] as keyof Row & string,
-			to: options.via,
-		});
-	}
-
-	#appendJoins(text: string): string {
-		for (const joinClause of this.#joinClauses) {
+	/** @internal */
+	_appendJoins(text: string): string {
+		for (const joinClause of this._joinClauses) {
 			text += ` ${joinClause}`;
 		}
 		return text;
 	}
 
-	#appendWhere(
+	/** @internal */
+	_appendWhere(
 		text: string,
 		paramOffset: number,
 	): { text: string; values: unknown[] } {
 		const values: unknown[] = [];
-		if (this.#whereClauses.length > 0) {
-			const joined = this.#whereClauses
+		if (this._whereClauses.length > 0) {
+			const joined = this._whereClauses
 				.map((clause) => clause.fragment)
 				.join(" AND ");
 			const renumbered = renumberParameters(joined, paramOffset);
 			text += ` WHERE ${renumbered}`;
-			for (const clause of this.#whereClauses) {
+			for (const clause of this._whereClauses) {
 				values.push(...clause.values);
 			}
 		}
 		return { text, values };
 	}
 
-	#renderSelect(
+	/** @internal */
+	_renderSelect(
 		projection: Projection,
 		options: RenderOptions,
 	): { text: string; values: unknown[] } {
@@ -368,8 +251,8 @@ export class QueryBuilder<Row> {
 		switch (projection.kind) {
 			case "default":
 				columnsClause =
-					this.#selectColumns.length > 0
-						? this.#selectColumns.map(quoteIdentifier).join(", ")
+					this._selectColumns.length > 0
+						? this._selectColumns.map(quoteIdentifier).join(", ")
 						: options.starColumn;
 				break;
 			case "columns":
@@ -386,11 +269,11 @@ export class QueryBuilder<Row> {
 		const supportsDistinct =
 			projection.kind === "default" || projection.kind === "columns";
 		const distinctClause =
-			this.#distinctValue && supportsDistinct ? "DISTINCT " : "";
+			this._distinctValue && supportsDistinct ? "DISTINCT " : "";
 
 		let text = `SELECT ${distinctClause}${columnsClause} FROM ${options.fromClause}`;
-		text = this.#appendJoins(text);
-		const { text: withWhere, values } = this.#appendWhere(
+		text = this._appendJoins(text);
+		const { text: withWhere, values } = this._appendWhere(
 			text,
 			options.paramOffset,
 		);
@@ -399,171 +282,72 @@ export class QueryBuilder<Row> {
 		const supportsOrdering =
 			projection.kind === "default" || projection.kind === "columns";
 
-		if (supportsOrdering && this.#orderClauses.length > 0) {
-			const orderParts = this.#orderClauses.map(
+		if (supportsOrdering && this._orderClauses.length > 0) {
+			const orderParts = this._orderClauses.map(
 				(clause) => `${quoteIdentifier(clause.column)} ${clause.direction}`,
 			);
 			text += ` ORDER BY ${orderParts.join(", ")}`;
 		}
 
-		if (supportsOrdering && this.#limitValue !== null) {
-			text += ` LIMIT ${this.#limitValue}`;
+		if (supportsOrdering && this._limitValue !== null) {
+			text += ` LIMIT ${this._limitValue}`;
 		}
 
-		if (supportsOrdering && this.#offsetValue !== null) {
-			text += ` OFFSET ${this.#offsetValue}`;
+		if (supportsOrdering && this._offsetValue !== null) {
+			text += ` OFFSET ${this._offsetValue}`;
 		}
 
 		if (projection.kind === "exists") {
 			text += " LIMIT 1";
 		}
 
-		if (
-			this.#lockClause &&
-			(projection.kind === "default" || projection.kind === "columns")
-		) {
-			text += ` ${this.#lockClause}`;
-		}
-
 		return { text, values };
 	}
 
-	#buildCte(captured: CapturedRecursive): {
-		text: string;
-		values: unknown[];
-	} {
-		const tableName = this.#tableDefinition.tableName;
-		const knownColumns = buildKnownColumnNames(this.#tableDefinition.columns);
-		const joinColumns = new Set([captured.fromDbColumn, captured.toDbColumn]);
-
-		// Anchor: SELECT "<table>".* FROM "<table>" [WHERE all_captured_where]
-		let anchorText = `SELECT ${quoteIdentifier(tableName)}.* FROM ${quoteIdentifier(tableName)}`;
-		const anchorValues: unknown[] = [];
-		if (captured.whereClauses.length > 0) {
-			const joined = captured.whereClauses
-				.map((clause) => clause.fragment)
-				.join(" AND ");
-			anchorText += ` WHERE ${joined}`;
-			for (const clause of captured.whereClauses) {
-				anchorValues.push(...clause.values);
-			}
-		}
-
-		// Step: SELECT "child".* FROM "<table>" "child"
-		//       INNER JOIN __traversal "parent" ON "child"."<from>" = "parent"."<to>"
-		//       [WHERE propagating_where_clauses requalified+renumbered]
-		//
-		// We omit clauses that filter on the join columns themselves — those
-		// only seed the anchor; if propagated to the step they would prune the
-		// recursion. `whereRaw` clauses (columnNames === null) always propagate.
-		const childAlias = "child";
-		const parentAlias = "parent";
-		let stepText = `SELECT ${quoteIdentifier(childAlias)}.* FROM ${quoteIdentifier(tableName)} ${quoteIdentifier(childAlias)} INNER JOIN __traversal ${quoteIdentifier(parentAlias)} ON ${quoteIdentifier(childAlias)}.${quoteIdentifier(captured.fromDbColumn)} = ${quoteIdentifier(parentAlias)}.${quoteIdentifier(captured.toDbColumn)}`;
-		const stepValues: unknown[] = [];
-		const stepFragments: string[] = [];
-		let originalParamIndex = 1; // position in anchor (full) numbering
-		let stepParamIndex = anchorValues.length + 1; // position in combined values
-
-		for (const clause of captured.whereClauses) {
-			const clauseLength = clause.values.length;
-			const referencesJoinColumn =
-				clause.columnNames?.some((column) => joinColumns.has(column)) ?? false;
-
-			if (!referencesJoinColumn) {
-				const shift = stepParamIndex - originalParamIndex;
-				const renumbered =
-					shift === 0
-						? clause.fragment
-						: clause.fragment.replace(
-								/\$(\d+)/g,
-								(_, num) => `$${Number(num) + shift}`,
-							);
-				const requalified = requalifyFragment(
-					renumbered,
-					childAlias,
-					knownColumns,
-				);
-				stepFragments.push(requalified);
-				stepValues.push(...clause.values);
-				stepParamIndex += clauseLength;
-			}
-
-			originalParamIndex += clauseLength;
-		}
-
-		if (stepFragments.length > 0) {
-			stepText += ` WHERE ${stepFragments.join(" AND ")}`;
-		}
-
-		const setOperator = captured.setSemantics ? "UNION" : "UNION ALL";
-		const text = `WITH RECURSIVE __traversal AS (${anchorText} ${setOperator} ${stepText})`;
-		return { text, values: [...anchorValues, ...stepValues] };
-	}
-
-	#buildSql(projection: Projection): { text: string; values: unknown[] } {
-		const tableName = this.#tableDefinition.tableName;
-		if (!this.#recursiveCte) {
-			return this.#renderSelect(projection, {
-				fromClause: quoteIdentifier(tableName),
-				starColumn: `${quoteIdentifier(tableName)}.*`,
-				paramOffset: 0,
-			});
-		}
-		const cte = this.#buildCte(this.#recursiveCte);
-		const outer = this.#renderSelect(projection, {
-			fromClause: "__traversal",
-			starColumn: "__traversal.*",
-			paramOffset: cte.values.length,
+	/** @internal */
+	_buildSql(projection: Projection): { text: string; values: unknown[] } {
+		const tableName = this._tableDefinition.tableName;
+		return this._renderSelect(projection, {
+			fromClause: quoteIdentifier(tableName),
+			starColumn: `${quoteIdentifier(tableName)}.*`,
+			paramOffset: 0,
 		});
-		return {
-			text: `${cte.text} ${outer.text}`,
-			values: [...cte.values, ...outer.values],
-		};
 	}
 
 	toSQL(): { text: string; values: unknown[] } {
-		return this.#buildSql({ kind: "default" });
-	}
-
-	#assertLockInTransaction(): void {
-		if (this.#lockClause && !isInTransaction()) {
-			throw new Error(
-				"lock() requires a transaction — a locked row without a transaction boundary releases immediately. Wrap your query in transaction()",
-			);
-		}
+		return this._buildSql({ kind: "default" });
 	}
 
 	async toArray(): Promise<Row[]> {
-		this.#assertLockInTransaction();
 		const { text, values } = this.toSQL();
 		const connection = getModelConnection();
 		const rows = await executeQuery(
 			connection,
 			text,
 			values,
-			this.#sensitiveColumns,
+			this._sensitiveColumns,
 		);
-		const ModelClass = this.#modelClass ?? this.#tableDefinition.rowClass;
+		const ModelClass = this._modelClass ?? this._tableDefinition.rowClass;
 
 		const results: Row[] = [];
 		for (const row of rows) {
 			const mapped = mapRowToModel(
 				row as Record<string, unknown>,
-				this.#reverseMap,
+				this._reverseMap,
 			);
 			results.push(
 				hydrateInstance(ModelClass as new () => object, mapped) as Row,
 			);
 		}
 
-		if (this.#includedAssociations.length > 0 && results.length > 0) {
+		if (this._includedAssociations.length > 0 && results.length > 0) {
 			const { preloadAssociations } = await import("./associations");
 			const firstResult = results[0] as object;
 			await preloadAssociations(
 				results,
-				this.#includedAssociations,
+				this._includedAssociations,
 				firstResult.constructor,
-				this.#tableDefinition,
+				this._tableDefinition,
 			);
 		}
 
@@ -577,15 +361,15 @@ export class QueryBuilder<Row> {
 	}
 
 	async last(): Promise<Row | null> {
-		const primaryKey = this.#tableDefinition.primaryKey[0];
+		const primaryKey = this._tableDefinition.primaryKey[0];
 		if (!primaryKey) {
 			throw new Error("Cannot call last() on a table without a primary key");
 		}
 		const dbColumn = resolveColumnName(
 			primaryKey,
-			this.#tableDefinition.columns,
+			this._tableDefinition.columns,
 		);
-		const reordered = this.#clone({
+		const reordered = this._clone({
 			orderClauses: [{ column: dbColumn, direction: "DESC" }],
 		}).limit(1);
 		const results = await reordered.toArray();
@@ -593,26 +377,26 @@ export class QueryBuilder<Row> {
 	}
 
 	async count(): Promise<number> {
-		const { text, values } = this.#buildSql({ kind: "count" });
+		const { text, values } = this._buildSql({ kind: "count" });
 		const connection = getModelConnection();
 		const rows = await executeQuery(
 			connection,
 			text,
 			values,
-			this.#sensitiveColumns,
+			this._sensitiveColumns,
 		);
 		const row = rows[0] as { count: number | string } | undefined;
 		return row ? Number(row.count) : 0;
 	}
 
 	async exists(): Promise<boolean> {
-		const { text, values } = this.#buildSql({ kind: "exists" });
+		const { text, values } = this._buildSql({ kind: "exists" });
 		const connection = getModelConnection();
 		const rows = await executeQuery(
 			connection,
 			text,
 			values,
-			this.#sensitiveColumns,
+			this._sensitiveColumns,
 		);
 		return rows.length > 0;
 	}
@@ -633,11 +417,11 @@ export class QueryBuilder<Row> {
 		if (columns.length === 0) {
 			throw new Error("pluck() requires at least one column");
 		}
-		const tableColumns = this.#tableDefinition.columns;
+		const tableColumns = this._tableDefinition.columns;
 		const dbColumns = columns.map((column) =>
 			resolveColumnName(column, tableColumns),
 		);
-		const { text, values } = this.#buildSql({
+		const { text, values } = this._buildSql({
 			kind: "columns",
 			dbColumns,
 		});
@@ -646,7 +430,7 @@ export class QueryBuilder<Row> {
 			connection,
 			text,
 			values,
-			this.#sensitiveColumns,
+			this._sensitiveColumns,
 		);
 
 		if (columns.length === 1) {
@@ -659,9 +443,8 @@ export class QueryBuilder<Row> {
 	}
 
 	async updateAll(attributes: Partial<Row>): Promise<number> {
-		this.#assertNoRecursiveCte("updateAll");
-		const columns = this.#tableDefinition.columns;
-		const tableName = this.#tableDefinition.tableName;
+		const columns = this._tableDefinition.columns;
+		const tableName = this._tableDefinition.tableName;
 		const setClauses: string[] = [];
 		const setValues: unknown[] = [];
 		let paramIndex = 1;
@@ -676,9 +459,9 @@ export class QueryBuilder<Row> {
 
 		let text = `UPDATE ${quoteIdentifier(tableName)} SET ${setClauses.join(", ")}`;
 
-		if (this.#whereClauses.length > 0) {
+		if (this._whereClauses.length > 0) {
 			const whereFragments: string[] = [];
-			for (const clause of this.#whereClauses) {
+			for (const clause of this._whereClauses) {
 				const renumbered = clause.fragment.replace(
 					/\$(\d+)/g,
 					(_, num) => `$${Number(num) + paramIndex - 1}`,
@@ -694,145 +477,24 @@ export class QueryBuilder<Row> {
 			connection,
 			text,
 			setValues,
-			this.#sensitiveColumns,
+			this._sensitiveColumns,
 		);
 		return (result as unknown as { count: number }).count;
 	}
 
 	async deleteAll(): Promise<number> {
-		this.#assertNoRecursiveCte("deleteAll");
-		const tableName = this.#tableDefinition.tableName;
+		const tableName = this._tableDefinition.tableName;
 		const deleteText = `DELETE FROM ${quoteIdentifier(tableName)}`;
-		const { text, values } = this.#appendWhere(deleteText, 0);
+		const { text, values } = this._appendWhere(deleteText, 0);
 
 		const connection = getModelConnection();
 		const result = await executeQuery(
 			connection,
 			text,
 			values,
-			this.#sensitiveColumns,
+			this._sensitiveColumns,
 		);
 		return (result as unknown as { count: number }).count;
-	}
-
-	#resolveDiscardedAtColumn(): string {
-		const entry = Object.entries(this.#tableDefinition.columns).find(
-			([, definition]) => definition.columnName === "discarded_at",
-		);
-		if (!entry) {
-			throw new Error(
-				`Cannot call discardAll()/undiscardAll(): table "${this.#tableDefinition.tableName}" does not have a "discarded_at" column`,
-			);
-		}
-		return entry[1].columnName;
-	}
-
-	async discardAll(): Promise<number> {
-		this.#assertNoRecursiveCte("discardAll");
-		const columnName = this.#resolveDiscardedAtColumn();
-		const tableName = this.#tableDefinition.tableName;
-		const updateText = `UPDATE ${quoteIdentifier(tableName)} SET ${quoteIdentifier(columnName)} = now()`;
-		const { text, values } = this.#appendWhere(updateText, 0);
-
-		const connection = getModelConnection();
-		const result = await executeQuery(
-			connection,
-			text,
-			values,
-			this.#sensitiveColumns,
-		);
-		return (result as unknown as { count: number }).count;
-	}
-
-	async undiscardAll(): Promise<number> {
-		this.#assertNoRecursiveCte("undiscardAll");
-		const columnName = this.#resolveDiscardedAtColumn();
-		const tableName = this.#tableDefinition.tableName;
-		const updateText = `UPDATE ${quoteIdentifier(tableName)} SET ${quoteIdentifier(columnName)} = NULL`;
-		const { text, values } = this.#appendWhere(updateText, 0);
-
-		const connection = getModelConnection();
-		const result = await executeQuery(
-			connection,
-			text,
-			values,
-			this.#sensitiveColumns,
-		);
-		return (result as unknown as { count: number }).count;
-	}
-
-	async findEach(
-		callback: (record: Row) => void | Promise<void>,
-		options?: { batchSize?: number },
-	): Promise<void> {
-		const batchSize = options?.batchSize ?? 1000;
-		const primaryKey = this.#tableDefinition.primaryKey[0];
-		if (!primaryKey) {
-			throw new Error(
-				"Cannot call findEach() on a table without a primary key",
-			);
-		}
-		const dbColumn = resolveColumnName(
-			primaryKey,
-			this.#tableDefinition.columns,
-		);
-
-		let cursor: unknown = null;
-		for (;;) {
-			let batch = this.order({
-				[primaryKey]: "ASC",
-			} as Partial<Record<keyof Row & string, OrderDirection>>).limit(
-				batchSize,
-			);
-			if (cursor !== null) {
-				batch = batch.whereRaw(`${quoteIdentifier(dbColumn)} > $1`, [cursor]);
-			}
-			const records = await batch.toArray();
-			if (records.length === 0) break;
-
-			for (const record of records) {
-				await callback(record);
-			}
-
-			const lastRecord = records[records.length - 1] as Record<string, unknown>;
-			cursor = lastRecord[primaryKey];
-		}
-	}
-
-	async findInBatches(
-		callback: (batch: Row[]) => void | Promise<void>,
-		options?: { batchSize?: number },
-	): Promise<void> {
-		const batchSize = options?.batchSize ?? 1000;
-		const primaryKey = this.#tableDefinition.primaryKey[0];
-		if (!primaryKey) {
-			throw new Error(
-				"Cannot call findInBatches() on a table without a primary key",
-			);
-		}
-		const dbColumn = resolveColumnName(
-			primaryKey,
-			this.#tableDefinition.columns,
-		);
-
-		let cursor: unknown = null;
-		for (;;) {
-			let batch = this.order({
-				[primaryKey]: "ASC",
-			} as Partial<Record<keyof Row & string, OrderDirection>>).limit(
-				batchSize,
-			);
-			if (cursor !== null) {
-				batch = batch.whereRaw(`${quoteIdentifier(dbColumn)} > $1`, [cursor]);
-			}
-			const records = await batch.toArray();
-			if (records.length === 0) break;
-
-			await callback(records);
-
-			const lastRecord = records[records.length - 1] as Record<string, unknown>;
-			cursor = lastRecord[primaryKey];
-		}
 	}
 
 	// biome-ignore lint/suspicious/noThenProperty: intentionally thenable so `await User.where(...)` works
@@ -844,7 +506,7 @@ export class QueryBuilder<Row> {
 	}
 
 	[SUBQUERY](): SubqueryDescriptor {
-		if (this.#recursiveCte) {
+		if (this._extensions.recursiveCte) {
 			throw new Error(
 				"A recursive query cannot be used as a subquery — " +
 					"use pluck() to materialize the result, then pass the array to where()",
@@ -852,8 +514,8 @@ export class QueryBuilder<Row> {
 		}
 
 		let dbColumns: string[];
-		if (this.#selectColumns.length === 0) {
-			const primaryKey = this.#tableDefinition.primaryKey;
+		if (this._selectColumns.length === 0) {
+			const primaryKey = this._tableDefinition.primaryKey;
 			if (primaryKey.length !== 1) {
 				throw new Error(
 					"Cannot use a query as a subquery without select() on a table " +
@@ -863,11 +525,11 @@ export class QueryBuilder<Row> {
 			dbColumns = [
 				resolveColumnName(
 					primaryKey[0] as keyof Row & string,
-					this.#tableDefinition.columns,
+					this._tableDefinition.columns,
 				),
 			];
-		} else if (this.#selectColumns.length === 1) {
-			dbColumns = this.#selectColumns;
+		} else if (this._selectColumns.length === 1) {
+			dbColumns = this._selectColumns;
 		} else {
 			throw new Error(
 				"A subquery must project exactly one column — " +
@@ -875,7 +537,7 @@ export class QueryBuilder<Row> {
 			);
 		}
 
-		const { text, values } = this.#buildSql({
+		const { text, values } = this._buildSql({
 			kind: "columns",
 			dbColumns,
 		});
@@ -883,10 +545,10 @@ export class QueryBuilder<Row> {
 	}
 
 	get tableDefinition(): TableDefinition<Row> {
-		return this.#tableDefinition;
+		return this._tableDefinition;
 	}
 
 	get includedAssociationNames(): string[] {
-		return this.#includedAssociations;
+		return this._includedAssociations;
 	}
 }

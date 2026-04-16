@@ -260,16 +260,9 @@ export interface BaseModel {
 	save(): Promise<void>;
 	update(attributes: Record<string, unknown>): Promise<void>;
 	destroy(): Promise<void>;
-	discard(): Promise<void>;
-	undiscard(): Promise<void>;
-	readonly isDiscarded: boolean;
-	readonly isKept: boolean;
 	reload(): Promise<void>;
-	lock(mode?: LockMode): Promise<void>;
-	withLock<Result>(
-		callback: (record: this) => Promise<Result>,
-		mode?: LockMode,
-	): Promise<Result>;
+	/** @internal — for plugin use (e.g. soft-delete, locking) */
+	_captureSnapshot(): void;
 	isValid(): Promise<boolean>;
 	changed(fieldName?: string): boolean;
 	changedAttributes(): Record<string, { was: unknown; now: unknown }>;
@@ -311,13 +304,6 @@ export interface ModelStatic<Row> {
 		count: number,
 	): QueryBuilder<InstanceType<Self>>;
 	all<Self extends ModelStatic<Row>>(
-		this: Self,
-	): QueryBuilder<InstanceType<Self>>;
-
-	kept<Self extends ModelStatic<Row>>(
-		this: Self,
-	): QueryBuilder<InstanceType<Self>>;
-	discarded<Self extends ModelStatic<Row>>(
 		this: Self,
 	): QueryBuilder<InstanceType<Self>>;
 

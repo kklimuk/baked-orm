@@ -647,17 +647,22 @@ Process large tables without loading everything into memory:
 
 ```ts
 // Iterate one record at a time, fetched in batches of 1000 (default)
-await User.where({ active: true }).findEach(async (user) => {
+for await (const user of User.where({ active: true }).findEach({ batchSize: 1000 })) {
   await sendEmail(user.email);
-}, { batchSize: 1000 });
+}
 
 // Or work with batches directly
-await User.all().findInBatches(async (batch) => {
+for await (const batch of User.all().findInBatches({ batchSize: 500 })) {
   await bulkIndex(batch);
-}, { batchSize: 500 });
+}
+
+// Custom ordering — cursor comparison flips automatically for DESC
+for await (const user of User.all().findEach({ order: { createdAt: "DESC" } })) {
+  console.log(user.createdAt);
+}
 ```
 
-Both use cursor-based pagination (keyset pagination on the primary key) — safe for large tables and concurrent modifications.
+Both use cursor-based pagination (keyset pagination) — safe for large tables and concurrent modifications. Defaults to primary key ascending; pass `order` to paginate by a different column.
 
 ### Validations
 
@@ -1025,6 +1030,56 @@ export default defineConfig({
 ```
 
 Pool options are passed directly to Bun's SQL driver. URL-style `database` strings use Bun's defaults.
+
+## Plugins
+
+baked-orm has a plugin system for extending Model and QueryBuilder behavior. Built-in features like soft deletes, pessimistic locking, recursive CTEs, and batch iteration are all implemented as plugins using the same public API.
+
+### Using a plugin
+
+Import the plugin before creating any models — the import triggers `definePlugin()` which patches the prototypes:
+
+```ts
+// Import third-party or your own plugins before models
+import "baked-orm-audit-log";
+import "./plugins/my-custom-plugin";
+
+// Now create models — they'll have the plugin methods
+import { Model } from "baked-orm";
+import { users } from "./db/schema";
+
+class User extends Model(users) {}
+```
+
+Built-in plugins (soft-delete, locking, recursive-cte, batch-iteration) are imported automatically — you don't need to import them yourself.
+
+### Writing a plugin
+
+```ts
+import { definePlugin } from "baked-orm";
+
+definePlugin({
+  name: "myPlugin",
+  instance: { /* methods added to model instances */ },
+  static: { /* methods added to model classes */ },
+  queryBuilder: { /* methods added to QueryBuilder.prototype */ },
+});
+```
+
+Add TypeScript types via declaration merging:
+
+```ts
+declare module "baked-orm" {
+  interface BaseModel {
+    myMethod(): Promise<void>;
+  }
+  interface QueryBuilder<Row> {
+    myQueryMethod(): QueryBuilder<Row>;
+  }
+}
+```
+
+Call `definePlugin()` at module top-level so plugins register before models are created. See [`src/plugins/README.md`](src/plugins/README.md) for the full authoring guide, and the built-in plugins in `src/plugins/` for canonical examples.
 
 ## Development
 

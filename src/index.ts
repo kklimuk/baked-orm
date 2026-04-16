@@ -1,3 +1,9 @@
+// Built-in plugins — self-register on import (must come before Model is used)
+import "./plugins/recursive-cte";
+import "./plugins/locking";
+import "./plugins/soft-delete";
+import "./plugins/batch-iteration";
+
 export { defineConfig } from "./config";
 export { Model } from "./model/base";
 export type { CallbackFunction, CallbackHook } from "./model/callbacks";
@@ -48,6 +54,8 @@ export type {
 	WhereValue,
 } from "./model/where";
 export { SUBQUERY } from "./model/where";
+export type { ModelPlugin } from "./plugins";
+export { definePlugin } from "./plugins";
 export type {
 	BakedConfig,
 	ColumnDefinition,

@@ -18,6 +18,7 @@ Database migration tool and ORM for Bun. PostgreSQL only via `Bun.sql`.
 - Use `@js-temporal/polyfill` for date/time operations, not `Date` constructors
 - Tabs for indentation, double quotes for strings (enforced by biome)
 - camelCase for all JS/TS property names; snake_case DB columns are auto-converted
+- Top-down file ordering: exports and entry points go first, followed by their direct dependencies, followed by their dependencies, and so on. A reader should encounter the "what" before the "how" — like a newspaper. Use `function` declarations (hoisted) over `const` arrow functions for internal helpers so this ordering works at runtime
 
 ## Tooling
 
@@ -52,10 +53,10 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/commands/` — one file per CLI command (init, create, drop, generate, migrate, status)
 
 ### ORM layer
-- `src/model/base.ts` — `Model()` mixin function. Returns a class extending the generated Row class with CRUD, query, association, validation, callback, and dirty tracking methods. Uses `this` in static methods for polymorphic subclass support. `save()` runs validation + callback lifecycle; `#performUpdate()` only sends dirty columns. `assignAttributes()` sets multiple fields without saving (used by `update()` internally). `buildConflictSQL()` is a private helper that assembles `ON CONFLICT` SQL fragments from a `ConflictOption`, used by `upsert`, `upsertAll`, `createMany`, and `create`. `findBySql(sqlText, values?)` executes raw SQL and returns hydrated model instances with full ORM features (dirty tracking, save, etc.)
-- `src/model/query.ts` — immutable, chainable `QueryBuilder`. Uses parameterized queries via `executeQuery()` for SQL injection safety. Thenable via `then()`. Includes `findEach`/`findInBatches` for cursor-based batch processing, `pluck`/`distinct` for raw column projection, and `recursiveOn`/`descendants`/`ancestors` for self-referential CTE traversal. `WhereClause` tracks the DB column names each clause references (or `null` for `whereRaw`) so the recursive step can omit predicates that filter on the join columns themselves. `where()` delegates to `compileConditions` in `where.ts` for operator/grouping support
+- `src/model/base.ts` — `Model()` factory function. Returns a class extending the generated Row class with CRUD, query, association, validation, callback, and dirty tracking methods. Uses `this` in static methods for polymorphic subclass support. `save()` runs validation + callback lifecycle; `#performUpdate()` only sends dirty columns. `assignAttributes()` sets multiple fields without saving (used by `update()` internally). `buildConflictSQL()` is a private helper that assembles `ON CONFLICT` SQL fragments from a `ConflictOption`, used by `upsert`, `upsertAll`, `createMany`, and `create`. `findBySql(sqlText, values?)` executes raw SQL and returns hydrated model instances with full ORM features (dirty tracking, save, etc.). Calls `applyModelPlugins(ModelBase)` at the end of the factory to wire in plugin instance/static methods
+- `src/model/query.ts` — immutable, chainable `QueryBuilder`. Uses `_` prefix convention (protected, not `#private`) so plugins can access internal state. Core SQL rendering (`_buildSql`, `_renderSelect`, `_appendWhere`) is kept minimal — features like locking, CTE wrapping, batch iteration are added by plugins that wrap these methods. `_extensions: Record<string, unknown>` is a plugin state bag, automatically shallow-copied by `_clone()`. `where()` delegates to `compileConditions` in `where.ts` for operator/grouping support
 - `src/model/where.ts` — pure compiler for `where()` conditions. Exports `WhereConditions<Row>`, `WhereValue<T>`, `WhereOperator<T>` types and the `compileConditions(conditions, columns, startParamIndex)` function that produces `{fragment, values, columnNames}[]` clauses joined by AND. Handles scalar equality, `null` → `IS NULL`, arrays → `IN`, operator objects (`{op, value}`), and nested `or`/`and` groupings
-- `src/model/recursive.ts` — pure helpers for recursive CTE construction: `requalifyFragment` (rewrites bare `"col"` tokens to `"alias"."col"` for known columns), `renumberParameters` (shifts `$N` placeholders by an offset), `buildKnownColumnNames` (extracts the DB column name set from a `TableDefinition`)
+- `src/common/query.ts` — shared types and utilities between query.ts and plugins: `WhereClause`, `OrderClause`, `Projection`, `RenderOptions`, `renumberParameters()`. Also exports `assertNoRecursiveCte()` guard used by multiple plugins
 - `src/model/associations.ts` — `loadAssociation()` and `preloadAssociations()` for belongsTo, hasOne, hasMany, hasManyThrough, and polymorphic associations. Supports nested eager loading via dotted paths (`includes("posts.comments")`). Model registry maps class names to constructors for polymorphic resolution
 - `src/model/validations.ts` — `validates()` factory for field-level rules (presence, length, numericality, format, inclusion, exclusion, email), `validate()` for record-level custom validators, `defineValidator()` registry for user-defined validators, `collectValidationErrors()` runner. Enum columns with `enumValues` in their `ColumnDefinition` are auto-validated without explicit `validates("inclusion")` — invalid values produce `"is not a valid value (must be one of: ...)"` errors
 - `src/model/callbacks.ts` — `runCallbacks()` discovers and executes lifecycle callback arrays from static properties on the model class
@@ -63,6 +64,15 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/model/connection.ts` — connection singleton wrapping existing config system. `AsyncLocalStorage` scopes transactions. `isInTransaction()` detects whether code is running inside a transaction. Supports `onQuery` callback for query logging. `query<T>(sqlText, values?)` executes raw SQL and returns typed plain objects (no model hydration) — for aggregates, groupings, and cross-table queries
 - `src/model/utils.ts` — shared utilities: `quoteIdentifier`, `resolveColumnName`, `buildReverseColumnMap`, `mapRowToModel`, `hydrateInstance`, `executeQuery` (with logging + sensitive column redaction), `buildConflictClause`, `buildSensitiveColumns`
 - `src/model/types.ts` — `ModelStatic<Row>`, `BaseModel`, `AnyModelStatic`, `AssociationDefinition`, `RecordNotFoundError`, `LockMode`, `ConflictTarget`, `ConflictOption`, `InsertOptions`. Also exports branded association types (`HasManyDef`, `HasOneDef`, `BelongsToDef`, `HasManyThroughDef`) and standalone factory functions (`hasMany`, `hasOne`, `belongsTo`, `hasManyThrough`) for the `Model(table, associations)` API. Factory functions accept either string model names (resolved from registry) or thunks (`() => Model`); string overloads take an explicit generic for type inference: `hasMany<Post>("Post")`
+
+### Plugin system
+- `src/plugins/index.ts` — `definePlugin()` registry. `ModelPlugin` interface has `instance`, `static`, and `queryBuilder` method bags. `queryBuilder` methods are patched onto `QueryBuilder.prototype` immediately in `definePlugin()`. `instance`/`static` methods are stored and applied per-model by `applyModelPlugins()`, called at end of `Model()` factory
+- `src/plugins/soft-delete.ts` — soft delete plugin. Adds `discard()`, `undiscard()`, `isDiscarded`, `isKept` to instances; `kept()`, `discarded()` to statics; `discardAll()`, `undiscardAll()` to QueryBuilder. Types via declaration merging on `BaseModel`, `ModelStatic`, `QueryBuilder`
+- `src/plugins/recursive-cte.ts` — recursive CTE plugin. Adds `recursiveOn()`, `descendants()`, `ancestors()` to QueryBuilder. Wraps `_buildSql` to inject `WITH RECURSIVE` wrapper. Stores CTE state in `_extensions.recursiveCte`. Also wraps `updateAll`/`deleteAll` to guard against recursive scope usage. Includes pure helpers merged from former `src/model/recursive.ts`: `requalifyFragment`, `buildKnownColumnNames`
+- `src/plugins/locking.ts` — pessimistic locking plugin. Adds `lock()` to QueryBuilder (sets `_extensions.lockClause` via `_clone`), wraps `_renderSelect` to append lock clause, wraps `toArray` to assert transaction state. Adds instance `lock()` and `withLock()` methods
+- `src/plugins/batch-iteration.ts` — batch processing plugin. Adds `findEach()` and `findInBatches()` as async iterators on QueryBuilder. Accepts `{ batchSize?, order? }` options — `order` overrides the default PK ascending cursor with custom column + direction (cursor comparison flips automatically for DESC). Composes public QueryBuilder API only (simplest plugin example)
+- Built-in plugins self-register via side-effect imports in `src/index.ts`
+- User-authored plugins use the same `definePlugin()` API and declaration merging pattern. See `src/plugins/README.md` for the authoring guide
 
 ### Association declaration patterns
 - **Preferred (separate files):** `Model(table, { posts: hasMany<Post>("Post") })` with `import type { Post }` — string-based model refs resolve from the registry at runtime, `import type` avoids circular imports, branded defs + `AssociationProperties` mapped type infer instance types automatically
@@ -90,7 +100,7 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `QueryBuilder.pluck("col")` returns `Promise<Row["col"][]>` — raw column values, no model hydration. Composes with `where`, `order`, `limit`, `distinct`, and the recursive CTE wrapper
 - Multi-column form: `QueryBuilder.pluck("col1", "col2")` returns `Promise<[Row["col1"], Row["col2"]][]>`
 - `QueryBuilder.distinct()` emits `SELECT DISTINCT`. Composes with `pluck` and `toArray`
-- Internally `pluck`/`count`/`exists`/`toSQL` all share the private `#buildSql(projection)` helper, parameterized by a projection mode (`default` / `columns` / `count` / `exists`). Adds the CTE wrapper transparently when `#recursiveCte` is set
+- Internally `pluck`/`count`/`exists`/`toSQL` all share `_buildSql(projection)`, parameterized by a projection mode (`default` / `columns` / `count` / `exists`). The recursive-cte plugin wraps `_buildSql` to add the CTE wrapper transparently when `_extensions.recursiveCte` is set
 
 ### Recursive tree traversal
 - `QueryBuilder.descendants({ via })` and `QueryBuilder.ancestors({ via })` walk a self-referential edge via `WITH RECURSIVE`. The current scope's predicates seed the anchor; the same predicates propagate to every recursive level *except* clauses that filter on the join columns themselves (those would prune the walk to the seed)
@@ -102,6 +112,7 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Composes with everything that comes after: `.where`, `.order`, `.limit`, `.toArray`, `.pluck`, `.count`, `.distinct`, `.includes`
 
 ### Pessimistic locking
+- Implemented as a plugin in `src/plugins/locking.ts`. Lock clause stored in `_extensions.lockClause`, rendered by wrapping `_renderSelect`. Transaction assertion by wrapping `toArray`
 - `QueryBuilder.lock(mode?)` appends a PostgreSQL lock clause (`FOR UPDATE`, `FOR SHARE`, `FOR NO KEY UPDATE`, `FOR KEY SHARE`) to SELECT queries. Defaults to `FOR UPDATE`. Supports `NOWAIT` and `SKIP LOCKED` suffixes via string passthrough
 - Lock clause is appended after LIMIT/OFFSET in the rendered SQL. Only applied to `default` and `columns` projection kinds — silently ignored on `count()`, `exists()`
 - `lock()` on a recursive CTE scope throws — PostgreSQL does not allow `FOR UPDATE` on CTEs
@@ -180,4 +191,10 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `registerModels(User, Post, ...)` must be called before `hydrate()` so the registry can resolve `__typename` to model classes. Models also auto-register on first instantiation
 
 ### Tests
-- `tests/` — unit tests for pure functions, integration tests for migrations and ORM (CRUD, queries, associations, transactions, eager loading, nested eager loading, validations, callbacks, dirty tracking)
+- Test directory mirrors `src/` structure: `tests/model/`, `tests/plugins/`, `tests/commands/`, `tests/frontend/`
+- `tests/` (root) — CLI, config, runner, introspect, and migration integration tests
+- `tests/model/` — query builder, validations, serializer, redaction, conflict, subquery, and base model integration tests
+- `tests/plugins/` — recursive CTE, locking, soft delete plugin tests
+- `tests/commands/` — model generator, migration generator tests
+- `tests/frontend/` — frontend model, hydration, registry tests
+- `tests/helpers/` — shared test utilities (postgres setup). `setup.ts` is preloaded by `bunfig.toml` to register all built-in plugins for tests that import directly from `src/model/` (bypassing `src/index.ts`). New plugins must be added here
