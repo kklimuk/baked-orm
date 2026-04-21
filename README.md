@@ -972,8 +972,10 @@ class Post extends FrontendModel(posts) {
   declare author: User;
 }
 
-// Register once at app startup so hydrate() can resolve __typename
-registerModels(User, Post);
+// Register once at app startup so hydrate() can resolve __typename.
+// The object key becomes the class's stable `typename` (used by `toJSON`) —
+// object keys survive JavaScript minification, unlike `class.name`.
+registerModels({ User, Post });
 ```
 
 #### 4. Frontend: hydrate API responses

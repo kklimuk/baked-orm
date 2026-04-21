@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { Temporal } from "@js-temporal/polyfill";
 
 import { hydrate } from "../../src/frontend/hydrate";
@@ -132,7 +132,7 @@ class Profile extends FrontendModel(profilesTableDef) {
 }
 
 // Register models so hydrate() can resolve __typename
-registerModels(User, Post, Profile);
+registerModels({ User, Post, Profile });
 
 // --- Tests ---
 
@@ -251,10 +251,97 @@ describe("FrontendModel", () => {
 	});
 
 	describe("registry", () => {
-		test("models are registered by class name", () => {
+		// Tests below register extra classes into the module-scoped registry.
+		// Track and delete them after each test to avoid cross-test pollution.
+		const addedKeys: string[] = [];
+		afterEach(() => {
+			const registry = getFrontendRegistry();
+			for (const key of addedKeys) registry.delete(key);
+			addedKeys.length = 0;
+		});
+
+		function makeSingleColumnModel(tableName: string) {
+			class RowClass {
+				[key: string]: unknown;
+				declare id: string;
+			}
+			const tableDef: TableDefinition<RowClass> = {
+				tableName,
+				columns: { id: { type: "uuid", nullable: false, columnName: "id" } },
+				primaryKey: ["id"],
+				indexes: {},
+				foreignKeys: {},
+				rowClass: RowClass,
+			};
+			return class extends FrontendModel(tableDef) {};
+		}
+
+		test("models are registered by object key", () => {
 			const registry = getFrontendRegistry();
 			expect(registry.has("User")).toBe(true);
 			expect(registry.has("Post")).toBe(true);
+		});
+
+		test("registerModels sets the typename static to the object key", () => {
+			expect((User as { typename?: string }).typename).toBe("User");
+			expect((Post as { typename?: string }).typename).toBe("Post");
+		});
+
+		test("registering under an alias keys the registry and typename by alias", () => {
+			const Widget = makeSingleColumnModel("widgets");
+			registerModels({ Gadget: Widget });
+			addedKeys.push("Gadget");
+
+			expect((Widget as { typename?: string }).typename).toBe("Gadget");
+			const widget = new Widget({ id: "w1" });
+			expect(widget.toJSON().__typename).toBe("Gadget");
+			expect(getFrontendRegistry().has("Gadget")).toBe(true);
+		});
+
+		test("re-registering same class under same name is idempotent", () => {
+			const Box = makeSingleColumnModel("boxes");
+			registerModels({ Box });
+			addedKeys.push("Box");
+			expect(() => registerModels({ Box })).not.toThrow();
+		});
+
+		test("re-registering same class under a different name throws", () => {
+			const Crate = makeSingleColumnModel("crates");
+			registerModels({ Crate });
+			addedKeys.push("Crate");
+			expect(() => registerModels({ Carton: Crate })).toThrow(
+				/already registered as "Crate"/,
+			);
+		});
+
+		test("hydrate resolves by typename even after class.name is mangled", () => {
+			const Minified = makeSingleColumnModel("minifieds");
+			registerModels({ Minified });
+			addedKeys.push("Minified");
+
+			// Simulate identifier minification: class.name gets mangled.
+			Object.defineProperty(Minified, "name", {
+				value: "q",
+				configurable: true,
+			});
+			expect(Minified.name).toBe("q");
+
+			const instance = hydrate<InstanceType<typeof Minified>>({
+				__typename: "Minified",
+				id: "m1",
+			});
+			expect(instance).toBeInstanceOf(Minified);
+			expect(instance.id).toBe("m1");
+
+			// toJSON also uses typename, not the mangled class.name
+			const fresh = new Minified({ id: "m2" });
+			expect(fresh.toJSON().__typename).toBe("Minified");
+		});
+
+		test("unregistered typename throws a helpful error", () => {
+			expect(() => hydrate({ __typename: "Unregistered", id: "1" })).toThrow(
+				/registerModels\(\{ Unregistered \}\)/,
+			);
 		});
 	});
 });

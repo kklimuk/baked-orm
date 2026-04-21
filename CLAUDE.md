@@ -188,7 +188,7 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/frontend/index.ts` — `baked-orm/frontend` entrypoint. Exports `FrontendModel`, `hydrate`, `registerModels`, plus re-exports of validation/error types
 - Frontend models import `db/schema.ts` directly — no separate manifest needed. Column type info from `TableDefinition.columns` drives hydration type conversion
 - `FrontendModel(tableDefinition)` mirrors `Model(tableDefinition)` API shape for consistency
-- `registerModels(User, Post, ...)` must be called before `hydrate()` so the registry can resolve `__typename` to model classes. Models also auto-register on first instantiation
+- `registerModels({ User, Post, ... })` must be called before `hydrate()` so the registry can resolve `__typename` to model classes. Registration is explicit (no auto-register on instantiation) — the object key becomes the class's static `typename`, which drives `toJSON().__typename`. Object keys survive JavaScript minification (unlike `class.name` under `minify.identifiers`), so bundles stay correct. `src/frontend/typename.ts` exports `resolveTypename(cls)` (reads the static `typename`, falls back to `cls.name`) and `defineTypename(cls, name)`. Only the frontend needs this — the server runs unminified in typical Bun deployments and continues to rely on `constructor.name` for the server-side registry, polymorphic `_type` lookups, and server `serialize()` output
 
 ### Tests
 - Test directory mirrors `src/` structure: `tests/model/`, `tests/plugins/`, `tests/commands/`, `tests/frontend/`

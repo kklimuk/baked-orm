@@ -6,7 +6,7 @@ import {
 } from "../model/validations";
 import type { TableDefinition } from "../types";
 import { hydrate } from "./hydrate";
-import { type AnyFrontendModelStatic, getFrontendRegistry } from "./registry";
+import { resolveTypename } from "./typename";
 
 /** Instance interface for frontend models. */
 export interface FrontendBaseModel {
@@ -24,6 +24,8 @@ export interface FrontendBaseModel {
 export interface FrontendModelStatic<Row = unknown> {
 	new (attributes?: Partial<Row>): Row & FrontendBaseModel;
 	tableDefinition: TableDefinition<Row>;
+	/** Stable identifier used on the wire as `__typename`. Set by `registerModels`. */
+	typename?: string;
 	fromJSON(json: Record<string, unknown>): Row & FrontendBaseModel;
 }
 
@@ -37,7 +39,6 @@ export function FrontendModel<Row>(
 	const RowClass = tableDefinition.rowClass;
 	const columns = tableDefinition.columns;
 	const primaryKeyField = tableDefinition.primaryKey[0] ?? "id";
-	const registry = getFrontendRegistry();
 
 	class FrontendBase extends (RowClass as unknown as new () => Record<
 		string,
@@ -53,10 +54,6 @@ export function FrontendModel<Row>(
 			super();
 			if (attributes) {
 				Object.assign(this, attributes);
-			}
-			const className = this.constructor.name;
-			if (!registry.has(className)) {
-				registry.set(className, this.constructor as AnyFrontendModelStatic);
 			}
 		}
 
@@ -104,7 +101,7 @@ export function FrontendModel<Row>(
 
 		toJSON(): Record<string, unknown> {
 			const result: Record<string, unknown> = {
-				__typename: this.constructor.name,
+				__typename: resolveTypename(this.constructor),
 			};
 			for (const camelKey of Object.keys(columns)) {
 				result[camelKey] = this[camelKey];
@@ -119,6 +116,5 @@ export function FrontendModel<Row>(
 		}
 	}
 
-	registry.set(FrontendBase.name, FrontendBase);
 	return FrontendBase as unknown as FrontendModelStatic<Row>;
 }

@@ -26,7 +26,7 @@ export function hydrate<T = unknown>(json: Record<string, unknown>): T {
 	const ModelClass = registry.get(typeName);
 	if (!ModelClass) {
 		throw new Error(
-			`Unknown model type: "${typeName}". Is the model registered?`,
+			`Unknown model type: "${typeName}". Register it via registerModels({ ${typeName} }) before calling hydrate().`,
 		);
 	}
 
