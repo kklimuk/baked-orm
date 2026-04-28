@@ -177,6 +177,56 @@ describe("parseIndexColumns", () => {
 		const result = parseIndexColumns("CREATE INDEX idx ON public.t");
 		expect(result).toEqual({ columns: [], unique: false });
 	});
+
+	test("captures partial-index WHERE predicate and excludes it from columns", () => {
+		const result = parseIndexColumns(
+			"CREATE INDEX idx_pages_kept ON public.pages USING btree (id) WHERE (discarded_at IS NULL)",
+		);
+		expect(result).toEqual({
+			columns: ["id"],
+			unique: false,
+			where: "discarded_at IS NULL",
+		});
+	});
+
+	test("captures partial-index WHERE on a unique multi-column index", () => {
+		const result = parseIndexColumns(
+			"CREATE UNIQUE INDEX shares_direct_unique ON public.shares USING btree (resource_type, resource_id, user_id) WHERE (source_share_id IS NULL)",
+		);
+		expect(result).toEqual({
+			columns: ["resource_type", "resource_id", "user_id"],
+			unique: true,
+			where: "source_share_id IS NULL",
+		});
+	});
+
+	test("does not split commas inside function calls", () => {
+		const result = parseIndexColumns(
+			"CREATE INDEX idx ON public.t USING btree (lower(name), coalesce(a, b))",
+		);
+		expect(result).toEqual({
+			columns: ["lower(name)", "coalesce(a, b)"],
+			unique: false,
+		});
+	});
+
+	test("handles WHERE predicate with nested parens", () => {
+		const result = parseIndexColumns(
+			"CREATE INDEX idx ON public.t USING btree (id) WHERE ((status = 'active') AND (deleted_at IS NULL))",
+		);
+		expect(result).toEqual({
+			columns: ["id"],
+			unique: false,
+			where: "(status = 'active') AND (deleted_at IS NULL)",
+		});
+	});
+
+	test("does not match the word UNIQUE inside a column name or predicate", () => {
+		const result = parseIndexColumns(
+			'CREATE INDEX idx ON public.t USING btree ("unique_visitor_id")',
+		);
+		expect(result).toEqual({ columns: ["unique_visitor_id"], unique: false });
+	});
 });
 
 describe("groupBy", () => {

@@ -149,8 +149,8 @@ After each migration, baked-orm introspects your database and generates a typed 
 
 - **Enum types** — PostgreSQL enum types introspected from `pg_enum`, generated as TypeScript string union types with runtime const arrays for validation
 - **Row classes** — typed classes with `declare`'d properties matching your table columns, extendable in your own code
-- **Table definitions** — column metadata, primary keys, indexes, foreign keys, and enum values
-- **Composite types** — Postgres composite types introspected from `pg_type` and generated as classes
+- **Table definitions** — column metadata, primary keys, indexes (including partial-index `where` predicates and functional-index expressions), foreign keys, and enum values
+- **Composite types** — standalone `CREATE TYPE ... AS (...)` composite types generated as classes (table row types are excluded — only user-declared composites appear here)
 
 ## ORM
 

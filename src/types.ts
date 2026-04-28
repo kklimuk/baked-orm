@@ -9,6 +9,7 @@ export type ColumnDefinition = {
 export type IndexDefinition = {
 	columns: string[];
 	unique?: boolean;
+	where?: string;
 };
 
 export type ForeignKeyDefinition = {

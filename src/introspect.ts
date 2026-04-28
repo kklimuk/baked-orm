@@ -125,8 +125,10 @@ async function introspectCompositeTypes(
 			pg_catalog.format_type(a.atttypid, a.atttypmod) AS attribute_type
 		FROM pg_catalog.pg_type t
 		JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+		JOIN pg_catalog.pg_class c ON c.oid = t.typrelid
 		JOIN pg_catalog.pg_attribute a ON a.attrelid = t.typrelid
 		WHERE t.typtype = 'c'
+			AND c.relkind = 'c'
 			AND n.nspname = 'public'
 			AND a.attnum > 0
 			AND NOT a.attisdropped
@@ -287,13 +289,76 @@ async function introspectIndexes(
 export function parseIndexColumns(indexdef: string): {
 	columns: string[];
 	unique: boolean;
+	where?: string;
 } {
-	const unique = indexdef.toUpperCase().includes("UNIQUE");
-	const match = indexdef.match(/\((.+)\)/);
-	const columns = match?.[1]
-		? match[1].split(",").map((col) => col.trim().replace(/"/g, ""))
-		: [];
-	return { columns, unique };
+	const unique = /\bCREATE\s+UNIQUE\b/i.test(indexdef);
+
+	const firstParen = indexdef.indexOf("(");
+	if (firstParen === -1) return { columns: [], unique };
+
+	const body = readBalancedParens(indexdef, firstParen);
+	if (!body) return { columns: [], unique };
+
+	const columns = splitTopLevelCommas(body.inner).map(stripIdentifierQuotes);
+
+	const after = indexdef.slice(body.endIndex + 1);
+	const whereMatch = after.match(/\bWHERE\b\s*(.+)$/is);
+	if (!whereMatch?.[1]) return { columns, unique };
+
+	const wherePredicate = whereMatch[1].trim();
+	const wherePredicateUnwrapped =
+		wherePredicate.startsWith("(") && wherePredicate.endsWith(")")
+			? wherePredicate.slice(1, -1).trim()
+			: wherePredicate;
+	return { columns, unique, where: wherePredicateUnwrapped };
+}
+
+function readBalancedParens(
+	source: string,
+	openIndex: number,
+): { inner: string; endIndex: number } | null {
+	if (source[openIndex] !== "(") return null;
+	let depth = 0;
+	for (let cursor = openIndex; cursor < source.length; cursor++) {
+		const character = source[cursor];
+		if (character === "(") depth++;
+		else if (character === ")") {
+			depth--;
+			if (depth === 0) {
+				return {
+					inner: source.slice(openIndex + 1, cursor),
+					endIndex: cursor,
+				};
+			}
+		}
+	}
+	return null;
+}
+
+function splitTopLevelCommas(input: string): string[] {
+	const parts: string[] = [];
+	let depth = 0;
+	let start = 0;
+	for (let cursor = 0; cursor < input.length; cursor++) {
+		const character = input[cursor];
+		if (character === "(") depth++;
+		else if (character === ")") depth--;
+		else if (character === "," && depth === 0) {
+			parts.push(input.slice(start, cursor).trim());
+			start = cursor + 1;
+		}
+	}
+	const tail = input.slice(start).trim();
+	if (tail.length > 0) parts.push(tail);
+	return parts;
+}
+
+function stripIdentifierQuotes(column: string): string {
+	const trimmed = column.trim();
+	if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
 }
 
 export async function generateSchema(
@@ -430,8 +495,11 @@ export async function generateSchema(
 		for (const idx of tableIdxs) {
 			const parsed = parseIndexColumns(idx.indexdef);
 			const uniqueStr = parsed.unique ? ", unique: true" : "";
+			const whereStr = parsed.where
+				? `, where: ${JSON.stringify(parsed.where)}`
+				: "";
 			lines.push(
-				`\t\t${idx.indexname}: { columns: [${parsed.columns.map((col) => JSON.stringify(col)).join(", ")}]${uniqueStr} },`,
+				`\t\t${idx.indexname}: { columns: [${parsed.columns.map((col) => JSON.stringify(col)).join(", ")}]${uniqueStr}${whereStr} },`,
 			);
 		}
 		lines.push("\t},");

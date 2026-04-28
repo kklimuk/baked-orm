@@ -295,4 +295,49 @@ describe("generateSchema", () => {
 		// Enum column has enumValues, composite column does not
 		expect(content).toContain("enumValues: StatusValues");
 	});
+
+	test("does not emit table row composites as standalone Composite classes", async () => {
+		await connection`
+			CREATE TABLE users (
+				id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+				name text NOT NULL
+			)
+		`;
+
+		const config = makeConfig();
+		await mkdir(tempDir, { recursive: true });
+		await generateSchema(connection, config, "20240101000000");
+
+		const content = await Bun.file(config.schemaPath).text();
+
+		expect(content).toContain("class UsersRow");
+		expect(content).not.toContain("class UsersComposite");
+		expect(content).not.toContain("// --- Composite Types ---");
+	});
+
+	test("captures partial-index WHERE predicate and excludes it from columns", async () => {
+		await connection`
+			CREATE TABLE pages (
+				id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+				parent_id uuid,
+				position text NOT NULL,
+				discarded_at timestamptz
+			)
+		`;
+		await connection`
+			CREATE INDEX idx_pages_parent_position
+			ON pages USING btree (parent_id, position)
+			WHERE (discarded_at IS NULL)
+		`;
+
+		const config = makeConfig();
+		await mkdir(tempDir, { recursive: true });
+		await generateSchema(connection, config, "20240101000000");
+
+		const content = await Bun.file(config.schemaPath).text();
+
+		expect(content).toContain(
+			'idx_pages_parent_position: { columns: ["parent_id", "position"], where: "discarded_at IS NULL" },',
+		);
+	});
 });
