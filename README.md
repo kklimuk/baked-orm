@@ -45,9 +45,11 @@ Generates a `baked.config.ts` with default settings, pre-populated with database
 ```bash
 bun bake db create myapp           # Create the database
 bun bake db drop myapp             # Drop the database
+bun bake db create                 # Use database name from config / env
+bun bake db drop                   # Use database name from config / env
 ```
 
-Connects to the `postgres` maintenance database to run `CREATE DATABASE` or `DROP DATABASE`. Uses connection details from your config or `PG*` env vars.
+Connects to the `postgres` maintenance database to run `CREATE DATABASE` or `DROP DATABASE`. Uses connection details from your config or `PG*` env vars. If no database name is passed, falls back to the one resolved from `baked.config.ts` or the `POSTGRES_URL` / `DATABASE_URL` / `PGDATABASE` env vars.
 
 ### Generate a migration
 

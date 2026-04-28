@@ -47,7 +47,7 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/commands/model.ts` — `runModel()` generates backend and frontend model files. Uses `toPascalCase` for class names, `toSnakeCase` for file/table names, infers table name by lowercasing + "s". Supports `--table`, `--backend`, `--frontend`, `--no-frontend`, `--no-backend` flags
 
 ### Migration system
-- `src/config.ts` — loads `baked.config.ts`, provides `getConnection()` for DB access
+- `src/config.ts` — loads `baked.config.ts`, provides `getConnection()` for DB access. `getConfiguredDatabaseName()` resolves a database name from `config.database` (string URL, `DatabaseConfig.database`, or `DatabaseConfig.url`), falling back to `POSTGRES_URL` / `DATABASE_URL` / `PGURL` / `PGDATABASE` env vars — used by `bake db create` / `bake db drop` to default the target db when no name is passed
 - `src/runner.ts` — migration discovery, transaction-scoped advisory locking (`pg_advisory_xact_lock`), transactional up/down execution, duplicate timestamp detection
 - `src/introspect.ts` — queries `information_schema` + `pg_type` to generate typed `db/schema.ts` with camelCase properties and `columnName` mapping. Introspects PostgreSQL enum types (`pg_enum`) and emits TypeScript string union types + `Values` const arrays in the schema. Enum columns use `udt_name` for type resolution when `data_type` is `USER-DEFINED`
 - `src/commands/` — one file per CLI command (init, create, drop, generate, migrate, status)

@@ -42,9 +42,42 @@ export function getMaintenanceConnection(config: ResolvedConfig): SQL {
 		return new SQL({ database: "postgres" });
 	}
 	if (typeof config.database === "string") {
-		const url = new URL(config.database);
-		url.pathname = "/postgres";
-		return new SQL(url.toString());
+		return new SQL(replaceDatabaseInUrl(config.database, "postgres"));
 	}
 	return new SQL({ ...config.database, database: "postgres" });
+}
+
+export function getConfiguredDatabaseName(
+	config: ResolvedConfig,
+): string | undefined {
+	if (typeof config.database === "string") {
+		return parseDatabaseFromUrl(config.database);
+	}
+	if (config.database) {
+		if (config.database.database) return config.database.database;
+		if (config.database.url) return parseDatabaseFromUrl(config.database.url);
+	}
+	const envUrl = Bun.env.POSTGRES_URL ?? Bun.env.DATABASE_URL;
+	if (envUrl) {
+		const fromEnvUrl = parseDatabaseFromUrl(envUrl);
+		if (fromEnvUrl) return fromEnvUrl;
+	}
+	return Bun.env.PGDATABASE;
+}
+
+export function parseDatabaseFromUrl(input: string): string | undefined {
+	let url: URL;
+	try {
+		url = new URL(input);
+	} catch {
+		return undefined;
+	}
+	const name = decodeURIComponent(url.pathname.replace(/^\//, ""));
+	return name || undefined;
+}
+
+function replaceDatabaseInUrl(input: string, databaseName: string): string {
+	const url = new URL(input);
+	url.pathname = `/${databaseName}`;
+	return url.toString();
 }

@@ -1,9 +1,9 @@
-import { getMaintenanceConnection } from "../config";
+import { getConfiguredDatabaseName, getMaintenanceConnection } from "../config";
 import { quoteIdentifier } from "../model/utils";
 import type { ResolvedConfig } from "../types";
 
 export async function runCreate(config: ResolvedConfig, args: string[]) {
-	const databaseName = args[0];
+	const databaseName = args[0] ?? getConfiguredDatabaseName(config);
 	if (!databaseName) {
 		console.error("Usage: bun db create <database_name>");
 		process.exit(1);
