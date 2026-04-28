@@ -46,6 +46,20 @@ export type AssociationType =
 	| "hasMany"
 	| "hasManyThrough";
 
+/**
+ * A scope builder applied to an association's query. Receives a fresh
+ * QueryBuilder filtered by the association's foreign keys plus the resolved
+ * target model class — returns a (potentially) modified QueryBuilder. Used to
+ * filter, order, or apply plugin helpers like `.kept()` to eager- and
+ * lazy-loaded child collections. The `target` argument is most useful for
+ * polymorphic associations, where the resolved target type varies per record
+ * and the scope needs to introspect it (e.g. `target.softDelete`).
+ */
+export type AssociationScope<Row = unknown> = (
+	query: QueryBuilder<Row>,
+	target: AnyModelStatic,
+) => QueryBuilder<Row>;
+
 export type AssociationDefinition = {
 	readonly associationType: AssociationType;
 	readonly model?: () => AnyModelStatic;
@@ -56,6 +70,8 @@ export type AssociationDefinition = {
 	readonly as?: string;
 	readonly through?: string;
 	readonly source?: string;
+	readonly defaultScope?: AssociationScope;
+	readonly defaultThroughScope?: AssociationScope;
 };
 
 /** Minimal interface for association model references — avoids strict Row generic constraints */
@@ -156,17 +172,41 @@ export type AssociationProperties<
 
 // --- Standalone association factory functions ---
 
+export type CollectionScopeOptions<TargetRow> = {
+	foreignKey?: string;
+	as?: string;
+	defaultScope?: AssociationScope<TargetRow>;
+};
+
+export type BelongsToScopeOptions<TargetRow> = {
+	foreignKey?: string;
+	defaultScope?: AssociationScope<TargetRow>;
+};
+
+export type PolymorphicBelongsToOptions = {
+	polymorphic: true;
+	defaultScope?: AssociationScope;
+};
+
+export type HasManyThroughOptions<TargetRow> = {
+	through: string;
+	foreignKey?: string;
+	source?: string;
+	defaultScope?: AssociationScope<TargetRow>;
+	defaultThroughScope?: AssociationScope;
+};
+
 export function hasMany<Target>(
 	model: string,
-	options?: { foreignKey?: string; as?: string },
+	options?: CollectionScopeOptions<Target>,
 ): HasManyDef<Target>;
 export function hasMany<Target extends AnyModelStatic>(
 	model: () => Target,
-	options?: { foreignKey?: string; as?: string },
+	options?: CollectionScopeOptions<InstanceType<Target>>,
 ): HasManyDef<InstanceType<Target>>;
 export function hasMany(
 	model: string | (() => AnyModelStatic),
-	options?: { foreignKey?: string; as?: string },
+	options?: CollectionScopeOptions<unknown>,
 ): AssociationDefinition {
 	return {
 		associationType: "hasMany",
@@ -175,20 +215,21 @@ export function hasMany(
 			: { model: model as () => AnyModelStatic }),
 		foreignKey: options?.foreignKey,
 		as: options?.as,
+		defaultScope: options?.defaultScope as AssociationScope | undefined,
 	} as AssociationDefinition;
 }
 
 export function hasOne<Target>(
 	model: string,
-	options?: { foreignKey?: string; as?: string },
+	options?: CollectionScopeOptions<Target>,
 ): HasOneDef<Target>;
 export function hasOne<Target extends AnyModelStatic>(
 	model: () => Target,
-	options?: { foreignKey?: string; as?: string },
+	options?: CollectionScopeOptions<InstanceType<Target>>,
 ): HasOneDef<InstanceType<Target>>;
 export function hasOne(
 	model: string | (() => AnyModelStatic),
-	options?: { foreignKey?: string; as?: string },
+	options?: CollectionScopeOptions<unknown>,
 ): AssociationDefinition {
 	return {
 		associationType: "hasOne",
@@ -197,29 +238,31 @@ export function hasOne(
 			: { model: model as () => AnyModelStatic }),
 		foreignKey: options?.foreignKey,
 		as: options?.as,
+		defaultScope: options?.defaultScope as AssociationScope | undefined,
 	} as AssociationDefinition;
 }
 
 export function belongsTo<Target>(
 	model: string,
-	options?: { foreignKey?: string },
+	options?: BelongsToScopeOptions<Target>,
 ): BelongsToDef<Target>;
 export function belongsTo<Target extends AnyModelStatic>(
 	model: () => Target,
-	options?: { foreignKey?: string },
+	options?: BelongsToScopeOptions<InstanceType<Target>>,
 ): BelongsToDef<InstanceType<Target>>;
-export function belongsTo<Target = unknown>(options: {
-	polymorphic: true;
-}): PolymorphicBelongsToDef<Target>;
+export function belongsTo<Target = unknown>(
+	options: PolymorphicBelongsToOptions,
+): PolymorphicBelongsToDef<Target>;
 export function belongsTo(
-	modelOrOptions: string | (() => AnyModelStatic) | { polymorphic: true },
-	options?: { foreignKey?: string },
+	modelOrOptions: string | (() => AnyModelStatic) | PolymorphicBelongsToOptions,
+	options?: BelongsToScopeOptions<unknown>,
 ): AnyAssociationDef {
 	if (typeof modelOrOptions === "string") {
 		return {
 			associationType: "belongsTo",
 			modelName: modelOrOptions,
 			foreignKey: options?.foreignKey,
+			defaultScope: options?.defaultScope as AssociationScope | undefined,
 		} as BelongsToDef<unknown>;
 	}
 	if (typeof modelOrOptions === "function") {
@@ -227,25 +270,27 @@ export function belongsTo(
 			associationType: "belongsTo",
 			model: modelOrOptions,
 			foreignKey: options?.foreignKey,
+			defaultScope: options?.defaultScope as AssociationScope | undefined,
 		} as BelongsToDef<unknown>;
 	}
 	return {
 		associationType: "belongsTo",
 		polymorphic: true,
+		defaultScope: modelOrOptions.defaultScope,
 	} as PolymorphicBelongsToDef;
 }
 
 export function hasManyThrough<Target>(
 	model: string,
-	options: { through: string; foreignKey?: string; source?: string },
+	options: HasManyThroughOptions<Target>,
 ): HasManyThroughDef<Target>;
 export function hasManyThrough<Target extends AnyModelStatic>(
 	model: () => Target,
-	options: { through: string; foreignKey?: string; source?: string },
+	options: HasManyThroughOptions<InstanceType<Target>>,
 ): HasManyThroughDef<InstanceType<Target>>;
 export function hasManyThrough(
 	model: string | (() => AnyModelStatic),
-	options: { through: string; foreignKey?: string; source?: string },
+	options: HasManyThroughOptions<unknown>,
 ): AssociationDefinition {
 	return {
 		associationType: "hasManyThrough",
@@ -255,6 +300,8 @@ export function hasManyThrough(
 		through: options.through,
 		foreignKey: options.foreignKey,
 		source: options.source,
+		defaultScope: options.defaultScope as AssociationScope | undefined,
+		defaultThroughScope: options.defaultThroughScope,
 	} as AssociationDefinition;
 }
 
@@ -359,20 +406,21 @@ export interface ModelStatic<Row> {
 		options: Required<InsertOptions<Row>>,
 	): Promise<InstanceType<Self>[]>;
 
-	hasMany(
-		model: () => AnyModelStatic,
-		options?: { foreignKey?: string; as?: string },
+	hasMany<Target extends AnyModelStatic>(
+		model: () => Target,
+		options?: CollectionScopeOptions<InstanceType<Target>>,
 	): AssociationDefinition;
-	hasOne(
-		model: () => AnyModelStatic,
-		options?: { foreignKey?: string; as?: string },
+	hasOne<Target extends AnyModelStatic>(
+		model: () => Target,
+		options?: CollectionScopeOptions<InstanceType<Target>>,
 	): AssociationDefinition;
-	belongsTo(
-		modelOrOptions: (() => AnyModelStatic) | { polymorphic: true },
-		options?: { foreignKey?: string },
+	belongsTo<Target extends AnyModelStatic>(
+		model: () => Target,
+		options?: BelongsToScopeOptions<InstanceType<Target>>,
 	): AssociationDefinition;
-	hasManyThrough(
-		model: () => AnyModelStatic,
-		options: { through: string; foreignKey?: string; source?: string },
+	belongsTo(options: PolymorphicBelongsToOptions): AssociationDefinition;
+	hasManyThrough<Target extends AnyModelStatic>(
+		model: () => Target,
+		options: HasManyThroughOptions<InstanceType<Target>>,
 	): AssociationDefinition;
 }

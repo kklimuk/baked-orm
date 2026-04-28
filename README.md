@@ -426,6 +426,62 @@ const users = await User.all()
 // users[0].posts[0].author   — also loaded
 ```
 
+### Scoped associations
+
+`hasMany`, `hasOne`, `hasManyThrough`, `belongsTo`, and polymorphic `belongsTo` accept an optional `defaultScope` builder that filters, orders, or otherwise transforms the loaded query — applied during both eager (`includes`) and lazy (`load`) loading:
+
+```ts
+class Thread extends Model(threads) {
+  static softDelete = true;
+  static comments = Thread.hasMany(() => Comment, {
+    defaultScope: (query) => query.kept().order({ createdAt: "ASC" }),
+  });
+}
+
+// thread.comments is already filtered to kept rows in createdAt order — no JS post-processing
+const threads = await Thread.kept().includes("comments").toArray();
+```
+
+`hasManyThrough` additionally accepts `defaultThroughScope` for filtering the join table independently:
+
+```ts
+class Post extends Model(posts) {
+  static taggings = Post.hasMany(() => Tagging);
+  static tags = Post.hasManyThrough(() => Tag, {
+    through: "taggings",
+    defaultThroughScope: (query) => query.kept(), // filter the join table
+    defaultScope: (query) => query.where({ active: true }), // filter the target
+  });
+}
+```
+
+When a scope sets `.limit(N)` or `.offset(N)`, the eager loader rewrites the batched query as `ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <scope_order>)` so the limit applies per-parent — `.limit(3)` returns up to 3 rows for *each* parent, not 3 total. Lazy loading uses limit normally because the query is already per-parent.
+
+For one-off overrides (e.g. an admin view that wants discarded rows), pass a `scope` option to `.includes()`. `false` bypasses the declared scope; a function replaces it:
+
+```ts
+// All comments including discarded ones, just for this query
+const threads = await Thread.all()
+  .includes("comments", { scope: false })
+  .toArray();
+
+// Only discarded comments
+const auditView = await Thread.all()
+  .includes("comments", { scope: (query) => query.discarded() })
+  .toArray();
+```
+
+The override applies only to the **top-level** association (the path's first segment). Nested levels in dotted paths (e.g. `"posts.comments"`) keep their declared scopes — to override a nested level, declare a second association without the scope and `.includes()` that one instead.
+
+Polymorphic scopes must be target-agnostic — the same scope runs against every possible target type. The scope's second argument is the resolved target model class:
+
+```ts
+static commentable = Comment.belongsTo({
+  polymorphic: true,
+  defaultScope: (query, target) => target.softDelete ? query.kept() : query,
+});
+```
+
 ### Recursive tree traversal
 
 For self-referential tables (e.g. a `pages` table with `parent_id`), `descendants()` and `ancestors()` walk the tree using a recursive CTE. The current scope's predicates seed the anchor and propagate to every recursive level:

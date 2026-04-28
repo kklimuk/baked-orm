@@ -7,7 +7,7 @@ import {
 } from "../common/query";
 import type { TableDefinition } from "../types";
 import { getModelConnection } from "./connection";
-import type { OrderDirection } from "./types";
+import type { AssociationScope, OrderDirection } from "./types";
 import {
 	buildReverseColumnMap,
 	buildSensitiveColumns,
@@ -43,6 +43,13 @@ export class QueryBuilder<Row> {
 	readonly _joinClauses: string[];
 	/** @internal */
 	readonly _includedAssociations: string[];
+	/**
+	 * @internal
+	 * Per-call overrides keyed by top-level association name. `false` bypasses
+	 * the declared `defaultScope` for that association on this query; a function
+	 * replaces it. Set via `.includes(path, { scope })`.
+	 */
+	readonly _includeOverrides: Map<string, false | AssociationScope>;
 	/** @internal */
 	readonly _modelClass: (new (attributes?: Partial<Row>) => Row) | null;
 	/** @internal */
@@ -62,6 +69,7 @@ export class QueryBuilder<Row> {
 			selectColumns?: string[];
 			joinClauses?: string[];
 			includedAssociations?: string[];
+			includeOverrides?: Map<string, false | AssociationScope>;
 			modelClass?: (new (attributes?: Partial<Row>) => Row) | null;
 			reverseMap?: Map<string, string>;
 			distinctValue?: boolean;
@@ -78,6 +86,7 @@ export class QueryBuilder<Row> {
 		this._selectColumns = options?.selectColumns ?? [];
 		this._joinClauses = options?.joinClauses ?? [];
 		this._includedAssociations = options?.includedAssociations ?? [];
+		this._includeOverrides = options?.includeOverrides ?? new Map();
 		this._modelClass = options?.modelClass ?? null;
 		this._sensitiveColumns = options?.modelClass
 			? buildSensitiveColumns(options.modelClass, tableDefinition.columns)
@@ -95,6 +104,7 @@ export class QueryBuilder<Row> {
 		selectColumns?: string[];
 		joinClauses?: string[];
 		includedAssociations?: string[];
+		includeOverrides?: Map<string, false | AssociationScope>;
 		distinctValue?: boolean;
 		extensions?: Record<string, unknown>;
 	}): QueryBuilder<Row> {
@@ -109,6 +119,7 @@ export class QueryBuilder<Row> {
 			joinClauses: overrides.joinClauses ?? this._joinClauses,
 			includedAssociations:
 				overrides.includedAssociations ?? this._includedAssociations,
+			includeOverrides: overrides.includeOverrides ?? this._includeOverrides,
 			modelClass: this._modelClass,
 			reverseMap: this._reverseMap,
 			distinctValue:
@@ -172,6 +183,11 @@ export class QueryBuilder<Row> {
 			string,
 			OrderDirection,
 		][]) {
+			if (direction !== "ASC" && direction !== "DESC") {
+				throw new Error(
+					`order() direction must be "ASC" or "DESC", got ${JSON.stringify(direction)}`,
+				);
+			}
 			const dbColumn = resolveColumnName(key, columns);
 			newClauses.push({ column: dbColumn, direction });
 		}
@@ -181,10 +197,20 @@ export class QueryBuilder<Row> {
 	}
 
 	limit(count: number): QueryBuilder<Row> {
+		if (!Number.isInteger(count) || count < 0) {
+			throw new Error(
+				`limit() requires a non-negative integer, got ${JSON.stringify(count)}`,
+			);
+		}
 		return this._clone({ limitValue: count });
 	}
 
 	offset(count: number): QueryBuilder<Row> {
+		if (!Number.isInteger(count) || count < 0) {
+			throw new Error(
+				`offset() requires a non-negative integer, got ${JSON.stringify(count)}`,
+			);
+		}
 		return this._clone({ offsetValue: count });
 	}
 
@@ -202,11 +228,56 @@ export class QueryBuilder<Row> {
 		});
 	}
 
-	includes(...associationNames: string[]): QueryBuilder<Row> {
+	includes(...associationNames: string[]): QueryBuilder<Row>;
+	/**
+	 * Per-call override of an association's `defaultScope`. The override applies
+	 * only to the **top-level** association named by the path's first segment;
+	 * nested levels still use their declared `defaultScope`. Pass `false` to
+	 * skip the declared scope entirely, or a function to replace it.
+	 *
+	 * To override a nested level instead, declare a second association without
+	 * the scope and `.includes()` that one (the Rails idiom).
+	 */
+	includes(
+		path: string,
+		options: {
+			scope: false | AssociationScope;
+		},
+	): QueryBuilder<Row>;
+	includes(
+		...args:
+			| string[]
+			| [path: string, options: { scope: false | AssociationScope }]
+	): QueryBuilder<Row> {
+		const last = args[args.length - 1];
+		if (
+			args.length === 2 &&
+			typeof args[0] === "string" &&
+			last !== null &&
+			typeof last === "object" &&
+			"scope" in last
+		) {
+			const scope = (last as { scope: unknown }).scope;
+			if (scope !== false && typeof scope !== "function") {
+				throw new Error(
+					`.includes() override 'scope' must be \`false\` or a function — got ${
+						scope === null ? "null" : typeof scope
+					}`,
+				);
+			}
+			const path = args[0];
+			const topLevelName = path.split(".")[0] as string;
+			const nextOverrides = new Map(this._includeOverrides);
+			nextOverrides.set(topLevelName, scope as false | AssociationScope);
+			return this._clone({
+				includedAssociations: [...this._includedAssociations, path],
+				includeOverrides: nextOverrides,
+			});
+		}
 		return this._clone({
 			includedAssociations: [
 				...this._includedAssociations,
-				...associationNames,
+				...(args as string[]),
 			],
 		});
 	}
@@ -314,12 +385,80 @@ export class QueryBuilder<Row> {
 		});
 	}
 
+	/**
+	 * @internal
+	 * Render SQL that limits/offsets rows per partition using
+	 * `ROW_NUMBER() OVER (PARTITION BY ...)`. Used by the eager-load path
+	 * when an association's `defaultScope` sets `_limitValue` / `_offsetValue`
+	 * — a flat `LIMIT` on a batched query would cap total rows across all
+	 * parents. Falls back to plain `_buildSql` when no limit/offset is set.
+	 */
+	_buildWindowedSql(partitionColumn: string): {
+		text: string;
+		values: unknown[];
+	} {
+		if (this._limitValue === null && this._offsetValue === null) {
+			return this._buildSql({ kind: "default" });
+		}
+
+		const inner = this._clone({
+			orderClauses: [],
+			limitValue: null,
+			offsetValue: null,
+		});
+		const { text: innerText, values } = inner._buildSql({ kind: "default" });
+
+		let orderForOver: string;
+		if (this._orderClauses.length > 0) {
+			orderForOver = this._orderClauses
+				.map(
+					(clause) => `${quoteIdentifier(clause.column)} ${clause.direction}`,
+				)
+				.join(", ");
+		} else {
+			const primaryKey = this._tableDefinition.primaryKey[0];
+			if (!primaryKey) {
+				throw new Error(
+					"Cannot build a windowed query without an ORDER BY: scope has no order() and the target table has no primary key. Add an order() to your defaultScope.",
+				);
+			}
+			const primaryKeyDb = resolveColumnName(
+				primaryKey,
+				this._tableDefinition.columns,
+			);
+			orderForOver = `${quoteIdentifier(primaryKeyDb)} ASC`;
+		}
+
+		const offsetValue = this._offsetValue ?? 0;
+		let windowFilter = `__baked_rn > ${offsetValue}`;
+		if (this._limitValue !== null) {
+			windowFilter += ` AND __baked_rn <= ${offsetValue + this._limitValue}`;
+		}
+
+		// Outer ORDER BY keeps per-parent rows grouped and in row_number order —
+		// otherwise PG is free to interleave partitions, which would break callers
+		// that rely on the scope's declared order within each parent's slice.
+		const text = `SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY ${quoteIdentifier(partitionColumn)} ORDER BY ${orderForOver}) AS __baked_rn FROM (${innerText}) AS __baked_inner) AS __baked_windowed WHERE ${windowFilter} ORDER BY ${quoteIdentifier(partitionColumn)}, __baked_rn`;
+
+		return { text, values };
+	}
+
 	toSQL(): { text: string; values: unknown[] } {
 		return this._buildSql({ kind: "default" });
 	}
 
 	async toArray(): Promise<Row[]> {
 		const { text, values } = this.toSQL();
+		return this._executeAndHydrate(text, values);
+	}
+
+	/**
+	 * @internal
+	 * Execute pre-built SQL through the same hydration + nested-preload pipeline
+	 * as `toArray()`. Used by the eager-load windowed path so any future hooks
+	 * added to the post-fetch flow apply uniformly.
+	 */
+	async _executeAndHydrate(text: string, values: unknown[]): Promise<Row[]> {
 		const connection = getModelConnection();
 		const rows = await executeQuery(
 			connection,
@@ -335,6 +474,9 @@ export class QueryBuilder<Row> {
 				row as Record<string, unknown>,
 				this._reverseMap,
 			);
+			// __baked_rn is the row_number marker emitted by _buildWindowedSql;
+			// strip it before hydration so it doesn't leak onto model instances.
+			delete (mapped as Record<string, unknown>).__baked_rn;
 			results.push(
 				hydrateInstance(ModelClass as new () => object, mapped) as Row,
 			);
@@ -348,6 +490,7 @@ export class QueryBuilder<Row> {
 				this._includedAssociations,
 				firstResult.constructor,
 				this._tableDefinition,
+				this._includeOverrides,
 			);
 		}
 

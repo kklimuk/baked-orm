@@ -12,10 +12,14 @@ import {
 	type AnyModelStatic,
 	type AssociationDefinition,
 	type AssociationProperties,
+	type BelongsToScopeOptions,
+	type CollectionScopeOptions,
 	type ConflictOption,
+	type HasManyThroughOptions,
 	type InsertOptions,
 	type ModelStatic,
 	type OrderDirection,
+	type PolymorphicBelongsToOptions,
 	RecordNotFoundError,
 	belongsTo as standaloneBelongsTo,
 	hasMany as standaloneHasMany,
@@ -622,23 +626,30 @@ export function Model<Row>(
 			return hydrateRows(this, rows);
 		}
 
-		static hasMany(
-			model: () => AnyModelStatic,
-			options?: { foreignKey?: string; as?: string },
+		static hasMany<Target extends AnyModelStatic>(
+			model: () => Target,
+			options?: CollectionScopeOptions<InstanceType<Target>>,
 		): AssociationDefinition {
 			return standaloneHasMany(model, options) as AssociationDefinition;
 		}
 
-		static hasOne(
-			model: () => AnyModelStatic,
-			options?: { foreignKey?: string; as?: string },
+		static hasOne<Target extends AnyModelStatic>(
+			model: () => Target,
+			options?: CollectionScopeOptions<InstanceType<Target>>,
 		): AssociationDefinition {
 			return standaloneHasOne(model, options) as AssociationDefinition;
 		}
 
+		static belongsTo<Target extends AnyModelStatic>(
+			model: () => Target,
+			options?: BelongsToScopeOptions<InstanceType<Target>>,
+		): AssociationDefinition;
 		static belongsTo(
-			modelOrOptions: (() => AnyModelStatic) | { polymorphic: true },
-			options?: { foreignKey?: string },
+			options: PolymorphicBelongsToOptions,
+		): AssociationDefinition;
+		static belongsTo(
+			modelOrOptions: (() => AnyModelStatic) | PolymorphicBelongsToOptions,
+			options?: BelongsToScopeOptions<unknown>,
 		): AssociationDefinition {
 			if (typeof modelOrOptions === "function") {
 				return standaloneBelongsTo(
@@ -649,13 +660,9 @@ export function Model<Row>(
 			return standaloneBelongsTo(modelOrOptions) as AssociationDefinition;
 		}
 
-		static hasManyThrough(
-			model: () => AnyModelStatic,
-			options: {
-				through: string;
-				foreignKey?: string;
-				source?: string;
-			},
+		static hasManyThrough<Target extends AnyModelStatic>(
+			model: () => Target,
+			options: HasManyThroughOptions<InstanceType<Target>>,
 		): AssociationDefinition {
 			return standaloneHasManyThrough(model, options) as AssociationDefinition;
 		}

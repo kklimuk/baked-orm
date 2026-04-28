@@ -58,6 +58,7 @@ definePlugin({
 				selectColumns: this._selectColumns,
 				joinClauses: [],
 				includedAssociations: this._includedAssociations,
+				includeOverrides: this._includeOverrides,
 				modelClass: this._modelClass,
 				reverseMap: this._reverseMap,
 				distinctValue: this._distinctValue,

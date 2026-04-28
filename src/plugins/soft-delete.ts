@@ -46,42 +46,42 @@ definePlugin({
 	},
 	static: {
 		kept(this: Record<string, unknown>): unknown {
-			if (!this.softDelete) {
-				throw new Error(
-					`Cannot call kept() on ${(this as { name: string }).name}: softDelete is not enabled on this model`,
-				);
-			}
-			const tableDefinition = (
-				this as unknown as { tableDefinition: TableDefinition }
-			).tableDefinition;
-			const discardedAtDbColumn = getDiscardedAtDbColumn(
-				tableDefinition.columns,
-				tableDefinition.tableName,
-			);
-			return (
-				this as unknown as { whereRaw: (fragment: string) => unknown }
-			).whereRaw(`${quoteIdentifier(discardedAtDbColumn)} IS NULL`);
+			requireSoftDeleteOnModel(this, "kept");
+			return (this as unknown as { all: () => { kept: () => unknown } })
+				.all()
+				.kept();
 		},
 
 		discarded(this: Record<string, unknown>): unknown {
-			if (!this.softDelete) {
-				throw new Error(
-					`Cannot call discarded() on ${(this as { name: string }).name}: softDelete is not enabled on this model`,
-				);
-			}
-			const tableDefinition = (
-				this as unknown as { tableDefinition: TableDefinition }
-			).tableDefinition;
-			const discardedAtDbColumn = getDiscardedAtDbColumn(
-				tableDefinition.columns,
-				tableDefinition.tableName,
-			);
-			return (
-				this as unknown as { whereRaw: (fragment: string) => unknown }
-			).whereRaw(`${quoteIdentifier(discardedAtDbColumn)} IS NOT NULL`);
+			requireSoftDeleteOnModel(this, "discarded");
+			return (this as unknown as { all: () => { discarded: () => unknown } })
+				.all()
+				.discarded();
 		},
 	},
 	queryBuilder: {
+		kept(
+			this: QueryBuilder<Record<string, unknown>>,
+		): QueryBuilder<Record<string, unknown>> {
+			requireSoftDeleteOnQuery(this, "kept");
+			const columnName = getDiscardedAtDbColumn(
+				this._tableDefinition.columns,
+				this._tableDefinition.tableName,
+			);
+			return this.whereRaw(`${quoteIdentifier(columnName)} IS NULL`);
+		},
+
+		discarded(
+			this: QueryBuilder<Record<string, unknown>>,
+		): QueryBuilder<Record<string, unknown>> {
+			requireSoftDeleteOnQuery(this, "discarded");
+			const columnName = getDiscardedAtDbColumn(
+				this._tableDefinition.columns,
+				this._tableDefinition.tableName,
+			);
+			return this.whereRaw(`${quoteIdentifier(columnName)} IS NOT NULL`);
+		},
+
 		async discardAll(
 			this: QueryBuilder<Record<string, unknown>>,
 		): Promise<number> {
@@ -122,6 +122,32 @@ definePlugin({
 	},
 });
 
+function requireSoftDeleteOnQuery(
+	query: QueryBuilder<Record<string, unknown>>,
+	method: string,
+): void {
+	const modelClass = query._modelClass as unknown as {
+		softDelete?: boolean;
+		name?: string;
+	} | null;
+	if (!modelClass?.softDelete) {
+		throw new Error(
+			`Cannot call ${method}() on a query builder for ${modelClass?.name ?? "this model"}: softDelete is not enabled`,
+		);
+	}
+}
+
+function requireSoftDeleteOnModel(
+	modelClass: Record<string, unknown>,
+	method: string,
+): void {
+	if (!modelClass.softDelete) {
+		throw new Error(
+			`Cannot call ${method}() on ${(modelClass as { name: string }).name}: softDelete is not enabled on this model`,
+		);
+	}
+}
+
 declare module "../model/types" {
 	interface BaseModel {
 		discard(): Promise<void>;
@@ -142,6 +168,8 @@ declare module "../model/types" {
 
 declare module "../model/query" {
 	interface QueryBuilder<Row> {
+		kept(): QueryBuilder<Row>;
+		discarded(): QueryBuilder<Row>;
 		discardAll(): Promise<number>;
 		undiscardAll(): Promise<number>;
 	}
