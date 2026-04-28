@@ -7,14 +7,33 @@ const cliPath = join(import.meta.dir, "../src/cli.ts");
 
 function runCli(
 	args: string[],
-	options?: { cwd?: string; env?: Record<string, string> },
+	options?: {
+		cwd?: string;
+		env?: Record<string, string>;
+		unsetEnv?: string[];
+		stdin?: string;
+	},
 ) {
-	return Bun.spawn(["bun", "run", cliPath, ...args], {
+	const env: Record<string, string> = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (value !== undefined) env[key] = value;
+	}
+	Object.assign(env, options?.env ?? {});
+	for (const key of options?.unsetEnv ?? []) {
+		delete env[key];
+	}
+	const proc = Bun.spawn(["bun", "run", cliPath, ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
+		stdin: options?.stdin !== undefined ? "pipe" : "inherit",
 		cwd: options?.cwd,
-		env: { ...process.env, ...options?.env },
+		env,
 	});
+	if (options?.stdin !== undefined && proc.stdin) {
+		proc.stdin.write(options.stdin);
+		proc.stdin.end();
+	}
+	return proc;
 }
 
 async function collectOutput(proc: ReturnType<typeof runCli>) {
@@ -129,9 +148,16 @@ describe("CLI db init", () => {
 
 describe("CLI db create/drop", () => {
 	const testDbName = `baked_cli_test_${Date.now()}`;
+	// `bake db create/drop` resolves a default database name from
+	// POSTGRES_URL / DATABASE_URL / PGDATABASE when no name is passed. To
+	// exercise the "nothing resolved" path we need to clear those env vars
+	// from the spawned process — CI sets PGDATABASE=baked_orm_test.
+	const dbNameEnv = ["POSTGRES_URL", "DATABASE_URL", "PGDATABASE"];
 
 	test("shows error when no database name is provided", async () => {
-		const { exitCode, stderr } = await collectOutput(runCli(["db", "create"]));
+		const { exitCode, stderr } = await collectOutput(
+			runCli(["db", "create"], { unsetEnv: dbNameEnv }),
+		);
 		expect(exitCode).toBe(1);
 		expect(stderr).toContain("Usage:");
 	});
@@ -171,9 +197,61 @@ describe("CLI db create/drop", () => {
 	});
 
 	test("shows error when no database name is provided for drop", async () => {
-		const { exitCode, stderr } = await collectOutput(runCli(["db", "drop"]));
+		const { exitCode, stderr } = await collectOutput(
+			runCli(["db", "drop"], { unsetEnv: dbNameEnv }),
+		);
 		expect(exitCode).toBe(1);
 		expect(stderr).toContain("Usage:");
+	});
+
+	test("requires type-to-confirm when name is defaulted from env", async () => {
+		const tempName = `baked_drop_prompt_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+		const create = await collectOutput(runCli(["db", "create", tempName]));
+		expect(create.exitCode).toBe(0);
+
+		const { exitCode, stdout } = await collectOutput(
+			runCli(["db", "drop"], {
+				env: { PGDATABASE: tempName },
+				stdin: `${tempName}\n`,
+			}),
+		);
+		expect(exitCode).toBe(0);
+		expect(stdout).toContain("About to DROP");
+		expect(stdout).toContain("Dropped");
+	});
+
+	test("aborts when prompt input does not match the resolved name", async () => {
+		const tempName = `baked_drop_mismatch_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+		const create = await collectOutput(runCli(["db", "create", tempName]));
+		expect(create.exitCode).toBe(0);
+		try {
+			const { exitCode, stderr } = await collectOutput(
+				runCli(["db", "drop"], {
+					env: { PGDATABASE: tempName },
+					stdin: "wrong_name\n",
+				}),
+			);
+			expect(exitCode).toBe(1);
+			expect(stderr).toContain("did not match");
+		} finally {
+			// Clean up the throwaway database (explicit name → no prompt).
+			await collectOutput(runCli(["db", "drop", tempName]));
+		}
+	});
+
+	test("--yes flag skips the prompt for defaulted names", async () => {
+		const tempName = `baked_drop_yes_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+		const create = await collectOutput(runCli(["db", "create", tempName]));
+		expect(create.exitCode).toBe(0);
+
+		const { exitCode, stdout } = await collectOutput(
+			runCli(["db", "drop", "--yes"], {
+				env: { PGDATABASE: tempName },
+			}),
+		);
+		expect(exitCode).toBe(0);
+		expect(stdout).toContain("Dropped");
+		expect(stdout).not.toContain("About to DROP");
 	});
 });
 

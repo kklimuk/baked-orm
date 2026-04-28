@@ -46,10 +46,13 @@ Generates a `baked.config.ts` with default settings, pre-populated with database
 bun bake db create myapp           # Create the database
 bun bake db drop myapp             # Drop the database
 bun bake db create                 # Use database name from config / env
-bun bake db drop                   # Use database name from config / env
+bun bake db drop                   # Type-to-confirm prompt before dropping
+bun bake db drop --yes             # Skip the confirmation prompt
 ```
 
 Connects to the `postgres` maintenance database to run `CREATE DATABASE` or `DROP DATABASE`. Uses connection details from your config or `PG*` env vars. If no database name is passed, falls back to the one resolved from `baked.config.ts` or the `POSTGRES_URL` / `DATABASE_URL` / `PGDATABASE` env vars.
+
+**Drop is destructive.** When `bake db drop` is run without an explicit name, it prompts you to type the resolved database name to confirm. Mismatched input aborts. Pass `--yes` (or `-y`) to skip the prompt — useful for CI/automation where you've intentionally pinned the target via env. Explicit `bake db drop <name>` does not prompt: typing the name on the command line counts as the confirmation.
 
 ### Generate a migration
 
