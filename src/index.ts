@@ -3,6 +3,7 @@ import "./plugins/recursive-cte";
 import "./plugins/locking";
 import "./plugins/soft-delete";
 import "./plugins/batch-iteration";
+import "./plugins/aggregates";
 
 export { defineConfig } from "./config";
 export { Model } from "./model/base";
@@ -58,6 +59,7 @@ export type {
 export { SUBQUERY } from "./model/where";
 export type { ModelPlugin } from "./plugins";
 export { definePlugin } from "./plugins";
+export type { GroupedQueryBuilder } from "./plugins/aggregates";
 export type {
 	BakedConfig,
 	ColumnDefinition,

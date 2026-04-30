@@ -79,6 +79,7 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - `src/plugins/recursive-cte.ts` — recursive CTE plugin. Adds `recursiveOn()`, `descendants()`, `ancestors()` to QueryBuilder. Wraps `_buildSql` to inject `WITH RECURSIVE` wrapper. Stores CTE state in `_extensions.recursiveCte`. Also wraps `updateAll`/`deleteAll` to guard against recursive scope usage. Includes pure helpers merged from former `src/model/recursive.ts`: `requalifyFragment`, `buildKnownColumnNames`
 - `src/plugins/locking.ts` — pessimistic locking plugin. Adds `lock()` to QueryBuilder (sets `_extensions.lockClause` via `_clone`), wraps `_renderSelect` to append lock clause, wraps `toArray` to assert transaction state. Adds instance `lock()` and `withLock()` methods
 - `src/plugins/batch-iteration.ts` — batch processing plugin. Adds `findEach()` and `findInBatches()` as async iterators on QueryBuilder. Accepts `{ batchSize?, order? }` options — `order` overrides the default PK ascending cursor with custom column + direction (cursor comparison flips automatically for DESC). Composes public QueryBuilder API only (simplest plugin example)
+- `src/plugins/aggregates.ts` — aggregations plugin. Adds `sum`, `avg`, `min`, `max`, `group`, `havingRaw`, `aggregate({...})` to both QueryBuilder and Model statics; wraps `count()` to dispatch to grouped form when `group()` is active; wraps `_renderSelect` to render aggregate SELECT (group-by + having) when `_extensions.aggregates` or transient `_extensions.aggregateTerminal` is set; wraps `[SUBQUERY]` to throw on aggregate-active builders. Plugin is fully self-contained — no changes to core `Projection` union, `_renderSelect`, or `Model`/`base.ts`. See "Aggregations" section below for the API
 - Built-in plugins self-register via side-effect imports in `src/index.ts`
 - User-authored plugins use the same `definePlugin()` API and declaration merging pattern. See `src/plugins/README.md` for the authoring guide
 
@@ -139,6 +140,27 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Instance `withLock(callback, mode?)` convenience wraps in `transaction()`, calls `this.lock(mode)`, then runs the callback with `this`. Returns the callback's return value. Rolls back on error
 - `LockMode` type union exported from `types.ts` covers all four PostgreSQL lock strengths × {bare, NOWAIT, SKIP LOCKED}
 - `isInTransaction()` exported from `connection.ts` and `src/index.ts` — returns `true` when inside a `transaction()` block
+
+### Aggregations
+- Implemented as a plugin in `src/plugins/aggregates.ts`. Exposes Rails-style "calculations" — `count`, `sum`, `avg`, `min`, `max` — plus `group(...cols)`, `havingRaw(fragment, values?)`, and an `aggregate({ alias: sqlFragment })` escape hatch on the grouped builder for non-standard aggregates (`array_agg`, `string_agg`, etc.)
+- Available as both Model statics and QueryBuilder methods: `User.sum("balance")` and `User.where(...).sum("balance")` both work; `User.group("status").count()` uses the static-then-chain pattern. Statics proxy through `this.all().<method>` (mirrors existing `static count()` / `static exists()` precedent)
+- Scalar (no `group()` upstream): `sum/avg/min/max` return `Promise<number | null>` (or `Promise<Row[K] | null>` for `min/max`); `null` matches Postgres aggregate semantics for empty sets. `count()` keeps its existing `Promise<number>` (returning `0` for empty sets) for backwards compatibility
+- Grouped: terminals return `Promise<Array<{ ...groupCols, fn }>>` (array-of-objects form) — matches Drizzle and Prisma conventions, and avoids the JS `Map` reference-equality footgun for multi-column tuple keys. Multi-column groups: `User.group("status", "role").count()` → `Array<{ status, role, count }>`. `null` group keys are surfaced as-is
+- TypeScript: `group()` returns a `GroupedQueryBuilder<Row, GroupCols>` interface (a structural view; runtime is the same QueryBuilder instance). `GroupedQueryBuilder` has narrowed terminal signatures (returning arrays) plus chainable `where/whereRaw/havingRaw/order/limit/offset` that re-thread through itself. Declared via `declare module` merging on `QueryBuilder` and `ModelStatic`
+- State storage: `_extensions.aggregates: { groupColumns: string[]; havingClauses: WhereClause[] }` — set by `group()` / `havingRaw()`, propagated through `_clone()` shallow merge. Transient `_extensions.aggregateTerminal: { kind: "fn", fn, column } | { kind: "raw", expressions }` — set by terminal methods on a one-shot clone before SQL build, never persisted
+- SQL rendering: plugin wraps `QueryBuilder.prototype._renderSelect` (locking-plugin pattern). When aggregate state is active, `renderAggregateSelect` builds the entire SELECT itself using `this._appendWhere`, `this._whereClauses`, `this._orderClauses`, `this._limitValue`, `this._offsetValue` — re-implementing ORDER BY / LIMIT / OFFSET inline. When inactive, passes through to the original. Zero core changes: `Projection` union and core `_renderSelect` switch are untouched
+- Composition with recursive CTE: works for free. Recursive-cte's `_buildSql` wrap calls `this._renderSelect(projection, { fromClause: "__traversal" })` for the outer query; aggregates' `_renderSelect` wrap intercepts and renders the aggregate SELECT against `__traversal`. Both plugins remain ignorant of each other
+- HAVING parameter offsetting: `havingRaw` clauses store fragments verbatim with their own `$N` numbering; at render time `renumberParameters()` shifts them by `paramOffset + values.length` so HAVING params land after WHERE params in the final SQL
+- Aggregate value coercion: `sum`/`avg`/`count` always coerce results to `Number` (Postgres returns `numeric` and large `int8` aggregates as strings). `min`/`max` coerce only when the source column type is in `NUMERIC_PG_TYPES` — for non-numeric columns (dates, strings) the value is returned as-is to preserve type
+- Composition guards (thrown at terminal-method invocation, not at chain build, so error messages reference the conflicting method name):
+  - `group()` + `lock()` → throws (Postgres rejects `FOR UPDATE` on aggregate queries)
+  - `group()` + `distinct()` → throws (ambiguous semantics; combine `COUNT(DISTINCT col)` via `aggregate({...})` instead)
+  - `group()` + `includes()` → throws (eager loading on aggregated rows is meaningless)
+  - `sum`/`avg` on a non-numeric column → throws with column name + type (runtime check via `NUMERIC_PG_TYPES` set; covers `int2/4/8`, `float4/8`, `numeric`, `decimal`, `money` and their longform aliases)
+  - `havingRaw` without `group()` → throws (Postgres rejects HAVING without GROUP BY)
+  - `aggregate({...})` without `group()` → throws (v1 only supports the grouped form; scalar form is v2)
+  - Aggregate-active QueryBuilder used as a `where()` subquery operand → throws via the wrapped `[SUBQUERY]` getter (projection conflict with the SUBQUERY symbol's PK-default contract). Workaround: materialize with `await` then use the value, or use `pluck()` on a non-aggregate variant
+- v2 candidates (deliberately not in v1): structured `having({ count: { gt: 5 } })` — needs a having-condition compiler distinct from `compileConditions`; multi-aggregate-per-query terminal (`pluck(count(), sum(col))`) — needs an aggregate-expression DSL; scalar-form `aggregate({...})` returning a single row (would also unlock ad-hoc window-function expressions like `aggregate({ rank: "ROW_NUMBER() OVER (...)" })`); scalar-subquery emission (`Model.where({ balance: { gt: User.avg("balance") } })` compiling to one round-trip — current workaround is materialize-then-use); static numeric-column type narrowing for `sum`/`avg`
 
 ### Conflict options (upsert / insert-or-skip)
 - All insert methods (`create`, `createMany`, `upsert`, `upsertAll`) accept a unified `conflict` option via `InsertOptions<Row>`
@@ -212,7 +234,7 @@ IMPORTANT: always update CLAUDE.md and README.md before committing.
 - Test directory mirrors `src/` structure: `tests/model/`, `tests/plugins/`, `tests/commands/`, `tests/frontend/`
 - `tests/` (root) — CLI, config, runner, introspect, and migration integration tests
 - `tests/model/` — query builder, validations, serializer, redaction, conflict, subquery, and base model integration tests
-- `tests/plugins/` — recursive CTE, locking, soft delete plugin tests
+- `tests/plugins/` — recursive CTE, locking, soft delete, aggregates plugin tests
 - `tests/commands/` — model generator, migration generator tests
 - `tests/frontend/` — frontend model, hydration, registry tests
 - `tests/helpers/` — shared test utilities (postgres setup). `setup.ts` is preloaded by `bunfig.toml` to register all built-in plugins for tests that import directly from `src/model/` (bypassing `src/index.ts`). New plugins must be added here

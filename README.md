@@ -399,6 +399,72 @@ Notes:
 - `.select()` with >1 column → throws (SQL `IN (SELECT a, b)` is not supported).
 - Recursive CTE scopes cannot be used as subqueries — use `pluck()` to materialize first.
 
+### Aggregations
+
+Rails-style "calculations" — `count`, `sum`, `avg`, `min`, `max` — plus `group(...)`, `havingRaw(...)`, and an `aggregate({...})` escape hatch. Available on both `Model` statics and `QueryBuilder`, so `User.sum("balance")` and `User.where({ active: true }).sum("balance")` both work.
+
+```ts
+// Scalar (no group()) — returns Promise<number | null>
+await Order.sum("total");                                // 750
+await Order.where({ status: "active" }).sum("total");    // 650
+await Order.avg("total");                                // 125
+await Order.min("createdAt");                            // earliest Date | null
+await Order.max("total");                                // 300
+// .count() unchanged — Promise<number> (returns 0 for empty sets)
+
+// Grouped — returns Array<{ ...groupCols, fn }>
+await Order.group("status").count();
+//   [{ status: "active", count: 4 }, { status: "cancelled", count: 2 }]
+
+await Order.group("userId").sum("total");
+//   [{ userId: "...", sum: 175 }, { userId: "...", sum: 275 }, ...]
+
+// Multi-column group
+await Order.group("userId", "status").count();
+//   [{ userId, status, count }, ...]
+
+// HAVING — post-aggregation filtering (escape hatch, raw SQL fragment)
+await Order.group("userId").havingRaw("COUNT(*) > $1", [1]).count();
+
+// aggregate({ alias: sqlFragment }) — for non-standard aggregates
+// (array_agg, string_agg, stddev, etc.) on the grouped builder
+await Order.group("userId").aggregate({
+  totalSum: "SUM(total)",
+  orderCount: "COUNT(*)",
+  itemIds: "ARRAY_AGG(id)",
+});
+```
+
+Result shape — array-of-objects, not `Map`. JS `Map` keys use reference equality, which makes multi-column tuple keys awkward (`m.get(["a", "b"])` won't find an entry stored under a structurally-equal-but-different-reference array). Drizzle and Prisma both ship array-of-objects for the same reason.
+
+Composes with the rest of the query builder:
+
+```ts
+// Soft-delete filter pre-aggregation
+await Order.kept().group("userId").sum("total");
+
+// Recursive CTE then aggregate
+await Page.where({ id: rootId })
+  .descendants({ via: "parentId" })
+  .group("kind")
+  .count();
+
+// Materialize-then-use for "scalar subquery" patterns
+const avg = await Order.avg("total");
+const aboveAvg = await Order.where({ total: { gt: avg as number } }).count();
+```
+
+Guards (thrown at terminal-method invocation):
+
+- `group() + lock()` → throws (Postgres rejects `FOR UPDATE` on aggregate queries)
+- `group() + distinct()` → throws (use `aggregate({ ct: "COUNT(DISTINCT col)" })` instead)
+- `group() + includes()` → throws (eager loading on aggregated rows is meaningless)
+- `sum/avg` on a non-numeric column → throws with column name + type
+- `havingRaw()` without `group()` → throws (Postgres rejects HAVING without GROUP BY)
+- Aggregate-active QueryBuilder used as a `where()` subquery operand → throws (projection conflict; materialize with `await` first)
+
+Out of scope for v1 (planned for v2): structured `having({ count: { gt: 5 } })`, multi-aggregate-per-query terminal (`pluck(count(), sum(...))`), scalar-form `aggregate({...})` (which would also unlock `ROW_NUMBER() OVER (...)`-style window expressions), single-round-trip scalar subqueries.
+
 ### Associations
 
 Load associations explicitly. Return types are inferred from the model definition:
