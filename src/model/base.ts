@@ -1,4 +1,4 @@
-import { applyModelPlugins } from "../plugins";
+import { applyModelPlugins, ensurePluginVirtuals } from "../plugins";
 import type { TableDefinition } from "../types";
 import { runCallbacks } from "./callbacks";
 import { getModelConnection } from "./connection";
@@ -172,6 +172,7 @@ export function Model<Row>(
 
 		constructor(attributes?: Partial<Row>) {
 			super();
+			ensurePluginVirtuals(this.constructor as unknown as AnyModelStatic);
 			if (attributes) {
 				Object.assign(this, attributes);
 			}

@@ -1,4 +1,5 @@
 import { ValidationErrors } from "../model/errors";
+import { serialize } from "../model/serializer";
 import { Snapshot } from "../model/snapshot";
 import {
 	collectValidationErrors,
@@ -6,7 +7,6 @@ import {
 } from "../model/validations";
 import type { TableDefinition } from "../types";
 import { hydrate } from "./hydrate";
-import { resolveTypename } from "./typename";
 
 /** Instance interface for frontend models. */
 export interface FrontendBaseModel {
@@ -100,13 +100,7 @@ export function FrontendModel<Row>(
 		// --- Serialization (for sending back to API) ---
 
 		toJSON(): Record<string, unknown> {
-			const result: Record<string, unknown> = {
-				__typename: resolveTypename(this.constructor),
-			};
-			for (const camelKey of Object.keys(columns)) {
-				result[camelKey] = this[camelKey];
-			}
-			return result;
+			return serialize(this, tableDefinition);
 		}
 
 		// --- Hydration ---

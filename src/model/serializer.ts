@@ -1,12 +1,15 @@
 import type { TableDefinition } from "../types";
+import { getComputedVirtuals, isSettableVirtual } from "./virtuals";
 
 export type SerializeOptions = {
-	/** Whitelist: only include these columns. */
+	/** Whitelist: only include these columns and virtuals. */
 	only?: string[];
-	/** Blacklist: exclude these columns. */
+	/** Blacklist: exclude these columns and virtuals. */
 	except?: string[];
 	/** Include associations — string[] shorthand or nested options per association. */
 	include?: string[] | Record<string, SerializeOptions | undefined>;
+	/** Call these instance methods and include their return values keyed by method name. */
+	methods?: readonly string[];
 };
 
 /**
@@ -57,32 +60,56 @@ export function serialize(
 	tableDefinition: TableDefinition,
 	options?: SerializeOptions,
 ): Record<string, unknown> {
-	const result: Record<string, unknown> = {
-		__typename: instance.constructor.name,
-	};
+	// biome-ignore lint/complexity/noBannedTypes: model constructor reference
+	const ctor = instance.constructor as unknown as Function &
+		Record<string, unknown>;
+	const typename = (ctor.typename as string | undefined) ?? ctor.name;
+	const result: Record<string, unknown> = { __typename: typename };
 
-	// Determine which columns to include
-	const modelClass = instance.constructor as unknown as Record<string, unknown>;
-	const sensitiveFields =
-		(modelClass.sensitiveFields as string[] | undefined) ?? [];
-	let columnKeys = Object.keys(tableDefinition.columns);
+	const columns = tableDefinition.columns;
+	const sensitive = new Set(
+		(ctor.sensitiveFields as string[] | undefined) ?? [],
+	);
 
-	// Always exclude sensitive fields
-	if (sensitiveFields.length > 0) {
-		columnKeys = columnKeys.filter((key) => !sensitiveFields.includes(key));
+	function isAllowed(key: string): boolean {
+		if (sensitive.has(key)) return false;
+		if (options?.only) return options.only.includes(key);
+		if (options?.except) return !options.except.includes(key);
+		return true;
 	}
 
-	// Apply only/except filters
-	if (options?.only) {
-		const only = options.only;
-		columnKeys = columnKeys.filter((key) => only.includes(key));
-	} else if (options?.except) {
-		const except = options.except;
-		columnKeys = columnKeys.filter((key) => !except.includes(key));
-	}
-
-	for (const camelKey of columnKeys) {
+	// Columns
+	for (const camelKey of Object.keys(columns)) {
+		if (!isAllowed(camelKey)) continue;
 		result[camelKey] = instance[camelKey];
+	}
+
+	// Computed virtuals (getters on the user's subclass prototype)
+	for (const name of getComputedVirtuals(ctor)) {
+		if (!isAllowed(name)) continue;
+		result[name] = instance[name];
+	}
+
+	// Settable virtuals: own-properties on the instance that aren't columns or
+	// associations. Catches class-field defaults, ad-hoc assignments, and SQL
+	// aliases populated during hydration.
+	for (const name of Object.keys(instance)) {
+		if (!isAllowed(name)) continue;
+		if (name in result) continue;
+		if (!isSettableVirtual(name, ctor)) continue;
+		const value = instance[name];
+		if (value === undefined) continue;
+		result[name] = value;
+	}
+
+	// Methods (Rails as_json(methods:) equivalent)
+	if (options?.methods) {
+		for (const name of options.methods) {
+			const fn = instance[name];
+			if (typeof fn === "function") {
+				result[name] = (fn as () => unknown).call(instance);
+			}
+		}
 	}
 
 	// Serialize included associations

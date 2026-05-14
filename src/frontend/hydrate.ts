@@ -49,7 +49,8 @@ export function hydrate<T = unknown>(json: Record<string, unknown>): T {
 		}
 	}
 
-	// Hydrate nested associations (discovered from JSON via __typename, not schema)
+	// Hydrate everything else: nested associations (discovered from JSON via
+	// __typename) and virtual attributes (plain values not in the column schema).
 	for (const [key, value] of Object.entries(json)) {
 		if (key === "__typename" || key in columns) continue;
 
@@ -65,6 +66,8 @@ export function hydrate<T = unknown>(json: Record<string, unknown>): T {
 			"__typename" in value
 		) {
 			instance[key] = hydrate(value as Record<string, unknown>);
+		} else {
+			instance[key] = value;
 		}
 	}
 

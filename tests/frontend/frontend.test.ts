@@ -227,11 +227,11 @@ describe("FrontendModel", () => {
 			expect(json.email).toBe("alice@test.com");
 		});
 
-		test("does not include non-column properties", () => {
+		test("includes virtual attributes assigned at runtime", () => {
 			const user = new User({ name: "Alice", email: "alice@test.com" });
-			(user as Record<string, unknown>).extraProp = "should not appear";
+			(user as Record<string, unknown>).extraProp = "now appears as virtual";
 			const json = user.toJSON();
-			expect(json.extraProp).toBeUndefined();
+			expect(json.extraProp).toBe("now appears as virtual");
 		});
 	});
 

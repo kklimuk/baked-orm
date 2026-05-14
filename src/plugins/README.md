@@ -1,6 +1,6 @@
 # baked-orm Plugins
 
-Plugins extend Model instances, Model classes (statics), and/or QueryBuilder with new methods. Built-in plugins (soft-delete, locking, recursive-cte, batch-iteration) use the exact same API described here.
+Plugins extend Model instances, Model classes (statics), QueryBuilder, and (optionally) the auto-serialized virtual-attribute set with new methods, getters, and fields. Built-in plugins (soft-delete, locking, recursive-cte, batch-iteration, aggregates) use the exact same API described here.
 
 ## `definePlugin()`
 
@@ -9,12 +9,14 @@ import { definePlugin } from "baked-orm";
 
 definePlugin({
   name: "myPlugin",
-  // Instance methods added to every model prototype
+  // Instance methods/getters added to every model prototype (NOT serialized)
   instance: { ... },
   // Static methods added to every model class
   static: { ... },
   // Methods added to QueryBuilder.prototype (patched once at registration)
   queryBuilder: { ... },
+  // Per-model virtual attributes that auto-serialize through toJSON()
+  virtuals: (modelClass) => ({ ... }),
 });
 ```
 
@@ -154,6 +156,63 @@ definePlugin({
   },
 });
 ```
+
+## Contributing serialized virtuals
+
+Use `instance:` when you want a callable / readable property that does NOT serialize (like `isDiscarded`). Use `virtuals:` when you want a property that DOES serialize through `toJSON()`. This is the explicit split — plugin authors opt into serialization by which API they reach for.
+
+```typescript
+definePlugin({
+  name: "audit",
+  // Per-model contribution. Called once per concrete user subclass on first
+  // instance creation. Return {} to skip a given model.
+  virtuals(modelClass) {
+    if (!(modelClass as { auditFields?: boolean }).auditFields) return {};
+    return {
+      // Read-only: assignment will throw in strict mode
+      fetchedAt: { get: (instance) => Date.now() },
+      // Settable: backed by a WeakMap or any other plugin-owned storage
+      auditNote: {
+        get: (instance) => storage.get(instance) ?? null,
+        set: (instance, value) => storage.set(instance, value),
+      },
+    };
+  },
+});
+```
+
+The plugin's `virtuals(modelClass)` runs lazily — on the first `new UserSubclass(...)` call. By that point the user's subclass exists with its statics, so per-model gating like `if (!modelClass.auditFields) return {}` works.
+
+**Type-side via declaration merging** — same pattern as `QueryBuilder`:
+
+```typescript
+declare module "baked-orm" {
+  interface BaseModel {
+    readonly fetchedAt: number;
+    auditNote: string | null;
+  }
+}
+```
+
+The augmentation appears on every model in the type system, but at runtime only models with the gate static (`auditFields = true` above) actually have the accessor. This matches the existing convention — `discard()` is typed on every model even though only `softDelete = true` models actually have it.
+
+### Conflict rules
+
+| Conflict | Resolution |
+|---|---|
+| Plugin contributes a name that's a column on the model | Silently ignored |
+| Plugin contributes a name that's an association on the model | Silently ignored |
+| User-declared property (getter, method, class field) on the subclass with same name | User wins silently — plugin doesn't define an accessor |
+| Two plugins contributing the same name | Throws on first instantiation, naming both plugins |
+
+### Plugin contract for virtuals detection
+
+The auto-detection of user-declared virtuals (class getters and class-field own-properties on user subclasses) only walks the user's own subclass prototype — NOT parent prototypes. This is the contract that lets `instance:` plugin getters (like `isDiscarded`) NOT accidentally serialize.
+
+For your plugin to play well with the convention:
+
+- **Add `instance:` properties to the parent prototype, not user subclasses.** The framework already does this for you (`applyModelPlugins` runs on the inner ModelBase class). Don't manually patch user subclasses with `Object.defineProperty(UserClass.prototype, ...)` — those would become accidental virtuals.
+- **If you set own-properties on instances** (rare — most plugins don't), prefix with `_` (skipped by detection) or use `Object.defineProperty(this, name, { enumerable: false })`. Plain enumerable own-properties are reserved for user-declared virtuals and SQL-aliased values from `findBySql`.
 
 ## Examples
 

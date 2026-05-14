@@ -57,7 +57,7 @@ export type {
 	WhereValue,
 } from "./model/where";
 export { SUBQUERY } from "./model/where";
-export type { ModelPlugin } from "./plugins";
+export type { ModelPlugin, PluginVirtual } from "./plugins";
 export { definePlugin } from "./plugins";
 export type { GroupedQueryBuilder } from "./plugins/aggregates";
 export type {
