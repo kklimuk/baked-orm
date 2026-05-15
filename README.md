@@ -1211,6 +1211,25 @@ user.toJSON();
 // → { __typename: "User", id, name: "", email, createdAt: Temporal.Instant }
 ```
 
+### Cloning for immutable updates
+
+`clone()` returns a copy with the same persisted/dirty state — useful for React-style
+state updates where you need a new object reference. Pass `overrides` to change columns
+or virtuals on the copy:
+
+```ts
+const next = user.clone({ name: "Renamed" });
+next === user;               // false — new reference
+next.isNewRecord;            // false — same record identity as the source
+next.changed("name");        // true — dirty against the source's baseline
+next.changedAttributes();    // { name: { was: "Old", now: "Renamed" } }
+```
+
+The copy is shallow: nested association objects and object/JSON column values are
+shared by reference, so replace whole values rather than mutating them in place.
+Cloning is a frontend-model concern — backend `Model` instances mutate in place and
+have no `clone()`.
+
 ## Plugins
 
 baked-orm has a plugin system for extending `Model`, `QueryBuilder`, and auto-serialized virtuals with custom methods, getters, and fields. The built-in features — **soft delete**, **pessimistic locking**, **recursive CTEs**, **batch iteration**, and **aggregations** — are all implemented as plugins using the same public API. They auto-register on `import "baked-orm"`; you don't need to wire them up.

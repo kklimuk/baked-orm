@@ -12,10 +12,11 @@ import { hydrate } from "./hydrate";
 export interface FrontendBaseModel {
 	readonly isNewRecord: boolean;
 	readonly errors: ValidationErrors;
-	assignAttributes(attributes: Record<string, unknown>): void;
+	assignAttributes(attributes: Partial<this>): void;
 	markPersisted(): void;
 	changed(fieldName?: string): boolean;
 	changedAttributes(): Record<string, { was: unknown; now: unknown }>;
+	clone(overrides?: Partial<this>): this;
 	isValid(context?: ValidationContext): boolean;
 	toJSON(): Record<string, unknown>;
 }
@@ -75,7 +76,22 @@ export function FrontendModel<Row>(
 			return this.#snapshot.changedAttributes(this);
 		}
 
-		assignAttributes(attributes: Partial<Row>): void {
+		/**
+		 * Return a copy of this instance with the same persisted/dirty state.
+		 * Shallow: nested association objects and object/JSON column values are
+		 * shared by reference. Pass `overrides` to change columns or virtuals on
+		 * the copy.
+		 */
+		clone(overrides?: Partial<this>): this {
+			const next = new (this.constructor as new () => this)();
+			Object.assign(next, this, overrides);
+			next.#persisted = this.#persisted;
+			next.#snapshot = this.#snapshot.clone();
+			// #validationErrors intentionally left fresh (constructor default)
+			return next;
+		}
+
+		assignAttributes(attributes: Partial<this>): void {
 			Object.assign(this, attributes);
 		}
 

@@ -183,7 +183,8 @@ Internal design notes, invariants, and API references for baked-orm. Read this w
 
 ## Dirty tracking
 - `src/model/snapshot.ts` — `Snapshot` class encapsulates snapshot-based dirty tracking. Shared between backend `Model` and frontend `FrontendModel`
-- `Snapshot` methods: `capture(instance)`, `changed(instance, fieldName?)`, `changedAttributes(instance)`, `dirtyEntries(instance)`
+- `Snapshot` methods: `capture(instance)`, `changed(instance, fieldName?)`, `changedAttributes(instance)`, `dirtyEntries(instance)`, `clone()`
+- `clone()` returns an independent `Snapshot` carrying the same captured baseline (shallow `Map` copy of `#data`; safe because `capture()` replaces entries rather than mutating them). Used by `FrontendBase.clone()` to preserve dirty state across a copy
 - Both `ModelBase` and `FrontendBase` own a private `#snapshot: Snapshot` and delegate to it
 - `save()` on a persisted record with no changes skips the UPDATE SQL entirely (callbacks still fire)
 - Snapshot resets after `save()`, `reload()`, `markPersisted()` (called by `hydrateInstance`)
@@ -200,6 +201,7 @@ Internal design notes, invariants, and API references for baked-orm. Read this w
 - `src/frontend/index.ts` — `baked-orm/frontend` entrypoint. Exports `FrontendModel`, `hydrate`, `registerModels`, plus re-exports of validation/error types
 - Frontend models import `db/schema.ts` directly — no separate manifest needed. Column type info from `TableDefinition.columns` drives hydration type conversion
 - `FrontendModel(tableDefinition)` mirrors `Model(tableDefinition)` API shape for consistency
+- `FrontendBase.clone(overrides?)` returns a copy with the same persisted/dirty state — for React-style immutable updates (`page.clone({ title: "B" })`). This must live on the model: the private `#snapshot`/`#persisted`/`#validationErrors` slots are unreachable from application code, so `Object.create`/`Object.assign` clones are silently broken. `clone()` constructs an empty instance, `Object.assign`s public columns + settable virtuals + associations, preserves `#persisted` and a `#snapshot.clone()` baseline, and leaves `#validationErrors` fresh (a clone is unvalidated). Shallow — nested association objects and object/JSON column values are shared by reference. Computed virtuals (prototype getters) recompute and must not appear in `overrides`. Backend `Model` has no `clone()`: it mutates in place and has no referential-equality need
 - `registerModels({ User, Post, ... })` must be called before `hydrate()` so the registry can resolve `__typename` to model classes. Registration is explicit (no auto-register on instantiation) — the object key becomes the class's static `typename`, which drives `toJSON().__typename`. Object keys survive JavaScript minification (unlike `class.name` under `minify.identifiers`), so bundles stay correct. `src/frontend/typename.ts` exports `defineTypename(cls, name)` used by `registerModels`; `serialize()` itself reads `static typename` directly when building `__typename`, falling back to `constructor.name`. Only the frontend needs the explicit registration — the server runs unminified in typical Bun deployments and continues to rely on `constructor.name` for the server-side registry and polymorphic `_type` lookups
 
 ## Tests

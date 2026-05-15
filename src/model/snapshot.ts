@@ -24,6 +24,13 @@ export class Snapshot {
 		);
 	}
 
+	/** Return an independent copy of this snapshot's captured baseline. */
+	clone(): Snapshot {
+		const copy = new Snapshot(this.#columns, this.#primaryKeyField);
+		copy.#data = new Map(this.#data);
+		return copy;
+	}
+
 	/** Store current column values from the instance. */
 	capture(instance: Record<string, unknown>): void {
 		this.#data.clear();
