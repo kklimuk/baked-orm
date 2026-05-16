@@ -5,6 +5,7 @@ Database migration tool and ORM for Bun. PostgreSQL only via `Bun.sql`.
 ## Commands
 
 - `bun run check` — runs biome, knip, and tsc
+- `bun run build` — emit `.d.ts` declarations to `dist/` via `tsconfig.build.json` (publish artifact; not needed for dev or tests)
 - `bun test` — runs unit and integration tests (requires local `baked_orm_test` database)
 - `bun run format` — auto-fix biome issues
 - `bun bake db <command>` — database CLI (requires `"bake": "bake"` script alias)
@@ -49,5 +50,6 @@ IMPORTANT: YOU MUST update CLAUDE.md, ARCHITECTURE.md, and README.md before endi
 - Plugins: `src/plugins/` (soft-delete, recursive-cte, locking, batch-iteration, aggregates)
 - Frontend layer: `src/frontend/` (FrontendModel, hydrate, typename registry)
 - Tests mirror `src/` under `tests/`; `tests/helpers/setup.ts` preloads built-in plugins for tests that import directly from `src/model/`
+- Build/publish: the package ships `.ts` source (Bun runs it natively) plus `.d.ts` declarations emitted to `dist/` by `tsconfig.build.json`. `exports` routes the `types` condition to `dist/*.d.ts` and `default` to `src/*.ts`. See ARCHITECTURE.md "Build & publishing"
 
 For design decisions, invariants, plugin internals, and API details (where-operators, aggregations, recursive CTE, locking, soft delete, virtuals, serialization, conflict options), read @ARCHITECTURE.md.

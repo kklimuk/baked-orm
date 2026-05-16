@@ -1247,7 +1247,10 @@ bun bake db create baked_orm_test
 bun test           # run tests
 bun run check      # biome + knip + tsc
 bun run format     # auto-fix lint issues
+bun run build      # emit .d.ts declarations to dist/ (publish artifact)
 ```
+
+baked-orm ships its `.ts` source — Bun runs it natively. `bun run build` emits only `.d.ts` declarations to `dist/`; the `exports` map routes type-checkers there so a consumer's strict `tsconfig` never type-checks baked-orm's source. You don't need to build for local development or tests.
 
 ## Editor setup
 

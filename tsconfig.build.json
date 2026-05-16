@@ -1,0 +1,16 @@
+{
+	// Emits .d.ts only (no .js). baked-orm ships its .ts source for Bun to run
+	// natively; the generated declarations exist so a consumer's `tsc` resolves
+	// types from .d.ts (which skipLibCheck skips) instead of type-checking
+	// baked-orm's raw .ts against the consumer's own strict compilerOptions.
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": false,
+		"emitDeclarationOnly": true,
+		"declaration": true,
+		"declarationMap": true,
+		"outDir": "dist",
+		"rootDir": "src"
+	},
+	"include": ["src"]
+}

@@ -32,5 +32,8 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Build
+        run: bun run build
+
       - name: Publish to npm
         run: npm publish --access public
